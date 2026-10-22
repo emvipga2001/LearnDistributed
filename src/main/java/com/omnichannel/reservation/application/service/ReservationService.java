@@ -4,6 +4,7 @@ import com.omnichannel.reservation.application.dto.ReservationResult;
 import com.omnichannel.reservation.application.port.in.ReserveInventoryCommand;
 import com.omnichannel.reservation.application.port.in.ReserveInventoryUseCase;
 import com.omnichannel.reservation.application.port.out.InventoryHoldPort;
+import com.omnichannel.reservation.application.port.out.InventoryStockCachePort;
 import com.omnichannel.reservation.domain.exception.InventoryInsufficientException;
 import com.omnichannel.reservation.domain.exception.ReservationIsHeld;
 import com.omnichannel.reservation.domain.model.InventoryItem;
@@ -29,27 +30,63 @@ public class ReservationService implements ReserveInventoryUseCase {
     private final InventoryRepository inventoryRepository;
     private final ReservationRepository reservationRepository;
     private final InventoryHoldPort inventoryHoldPort;
+    private final InventoryStockCachePort inventoryStockCachePort;
 
     @Override
     @Transactional
     public ReservationResult reserve(ReserveInventoryCommand command) {
-        log.info("Processing reservation command for customer: {}, channel: {}, items count: {}",
+        log.info("Processing hybrid reservation for customer: {}, channel: {}, items count: {}",
                 command.customerId(), command.channel(), command.items().size());
 
-        // 1. DEADLOCK PREVENTION: Sort inventory IDs ascending before acquiring locks
+        // 1. DEADLOCK PREVENTION: Sắp xếp ID toàn bộ tài nguyên tăng dần trước khi khóa
         List<Long> requestedItemIds = command.items().stream()
                 .map(ReserveInventoryCommand.ItemReservationRequest::inventoryItemId)
                 .distinct()
                 .sorted()
                 .toList();
 
-        boolean isHeld = inventoryHoldPort.tryHold(requestedItemIds, command.customerId(), command.holdDuration());
-        if (!isHeld) {
-            throw new ReservationIsHeld();
+        // 2. PHÂN LOẠI NGHIỆP VỤ: Ghế định danh độc nhất (Assigned Seat) vs Vé số lượng (General Stock)
+        List<Long> assignedSeatIds = command.items().stream()
+                .filter(ReserveInventoryCommand.ItemReservationRequest::isAssignedSeat)
+                .map(ReserveInventoryCommand.ItemReservationRequest::inventoryItemId)
+                .distinct()
+                .sorted()
+                .toList();
+
+        Map<Long, Integer> stockItemsToDeduct = command.items().stream()
+                .filter(it -> !it.isAssignedSeat())
+                .collect(Collectors.toMap(
+                        ReserveInventoryCommand.ItemReservationRequest::inventoryItemId,
+                        ReserveInventoryCommand.ItemReservationRequest::quantity,
+                        Integer::sum
+                ));
+
+        // 3. TẦNG BẢO VỆ REDIS L1 (DUAL-GUARD):
+        // 3.1. Giữ chỗ độc quyền cho các ghế định danh
+        if (!assignedSeatIds.isEmpty()) {
+            boolean isHeld = inventoryHoldPort.tryHold(assignedSeatIds, command.customerId(), command.holdDuration());
+            if (!isHeld) {
+                log.warn("Assigned seats already held for items: {}", assignedSeatIds);
+                throw new ReservationIsHeld();
+            }
+        }
+
+        // 3.2. Trừ tồn kho nguyên tử (Fail-Fast Flash Sale) cho vé số lượng
+        if (!stockItemsToDeduct.isEmpty()) {
+            boolean stockDeducted = inventoryStockCachePort.tryDeductStock(stockItemsToDeduct);
+            if (!stockDeducted) {
+                log.warn("Insufficient stock on Redis for items: {}", stockItemsToDeduct);
+                // BỒI HOÀN LIÊN ĐỚI (Cascading Compensation): Nhả lại ghế định danh nếu vé số lượng hết hàng
+                if (!assignedSeatIds.isEmpty()) {
+                    inventoryHoldPort.releaseHold(assignedSeatIds, command.customerId());
+                }
+                throw new InventoryInsufficientException("FLASH_SALE_STOCK", 0, 0);
+            }
         }
 
         try {
-            // 2. Fetch inventory items with pessimistic write lock in strict ID order
+            // 4. TẦNG BỀN VỮNG DATABASE L2 (ACID DURABILITY):
+            // Lấy dữ liệu với khóa bi quan (Pessimistic Write Lock) theo thứ tự ID tăng dần
             List<InventoryItem> lockedInventories = inventoryRepository.findAllByIdsInOrderWithLock(requestedItemIds);
             Map<Long, InventoryItem> inventoryMap = lockedInventories.stream()
                     .collect(Collectors.toMap(InventoryItem::getId, item -> item));
@@ -58,19 +95,24 @@ public class ReservationService implements ReserveInventoryUseCase {
                 throw new IllegalArgumentException("One or more inventory items do not exist");
             }
 
-            // 3. Check capacity and reserve
+            // Kiểm tra khả dụng và tăng số lượng đã giữ trong DB
             for (var reqItem : command.items()) {
                 InventoryItem inventory = inventoryMap.get(reqItem.inventoryItemId());
                 inventory.reserveForOnline(reqItem.quantity());
                 inventoryRepository.save(inventory);
             }
-        } catch (Exception ex){
-            log.error("Lỗi khi xử lý DB, đang giải phóng khóa Redis...", ex);
-            inventoryHoldPort.releaseHold(requestedItemIds, command.customerId());
+        } catch (Exception ex) {
+            log.error("Lỗi khi xử lý Database, kích hoạt bồi hoàn (Compensating Actions) trên Redis...", ex);
+            if (!assignedSeatIds.isEmpty()) {
+                inventoryHoldPort.releaseHold(assignedSeatIds, command.customerId());
+            }
+            if (!stockItemsToDeduct.isEmpty()) {
+                inventoryStockCachePort.revertStock(stockItemsToDeduct);
+            }
             throw ex;
         }
 
-        // 4. Construct reservation aggregate
+        // 5. Khởi tạo đối tượng Reservation Aggregate
         Instant expiresAt = Instant.now().plus(command.holdDuration());
         String reservationCode = "RES-" + UUID.randomUUID().toString().substring(0, 8).toUpperCase();
 
@@ -93,7 +135,7 @@ public class ReservationService implements ReserveInventoryUseCase {
 
         Reservation savedReservation = reservationRepository.save(reservation);
 
-        log.info("Successfully reserved reservationCode: {}, expiresAt: {}", reservationCode, expiresAt);
+        log.info("Successfully created reservationCode: {}, expiresAt: {}", reservationCode, expiresAt);
 
         List<ReservationResult.ReservationItemResult> itemResults = savedReservation.getItems().stream()
                 .map(item -> new ReservationResult.ReservationItemResult(item.getId(), item.getInventoryItemId(), item.getQuantity()))

@@ -3,6 +3,7 @@ package com.omnichannel.reservation.application.service;
 import com.omnichannel.reservation.application.dto.ReservationResult;
 import com.omnichannel.reservation.application.port.in.ReserveInventoryCommand;
 import com.omnichannel.reservation.application.port.out.InventoryHoldPort;
+import com.omnichannel.reservation.application.port.out.InventoryStockCachePort;
 import com.omnichannel.reservation.domain.exception.InventoryInsufficientException;
 import com.omnichannel.reservation.domain.exception.ReservationIsHeld;
 import com.omnichannel.reservation.domain.model.Channel;
@@ -23,6 +24,7 @@ import java.math.BigDecimal;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.List;
+import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -41,93 +43,101 @@ class ReservationServiceUnitTest {
     @Mock
     private InventoryHoldPort inventoryHoldPort;
 
+    @Mock
+    private InventoryStockCachePort inventoryStockCachePort;
+
     @InjectMocks
     private ReservationService reservationService;
 
-    private ReserveInventoryCommand sampleCommand;
+    private ReserveInventoryCommand seatOnlyCommand;
+    private ReserveInventoryCommand hybridCommand;
 
     @BeforeEach
     void setUp() {
-        sampleCommand = new ReserveInventoryCommand(
+        seatOnlyCommand = new ReserveInventoryCommand(
                 "CUST-001",
                 Channel.ONLINE,
                 Duration.ofMinutes(10),
                 List.of(
-                        new ReserveInventoryCommand.ItemReservationRequest(101L, 1, BigDecimal.valueOf(100.0)),
-                        new ReserveInventoryCommand.ItemReservationRequest(102L, 1, BigDecimal.valueOf(100.0))
+                        new ReserveInventoryCommand.ItemReservationRequest(101L, 1, BigDecimal.valueOf(100.0), true),
+                        new ReserveInventoryCommand.ItemReservationRequest(102L, 1, BigDecimal.valueOf(100.0), true)
+                )
+        );
+
+        hybridCommand = new ReserveInventoryCommand(
+                "CUST-HYBRID",
+                Channel.ONLINE,
+                Duration.ofMinutes(10),
+                List.of(
+                        new ReserveInventoryCommand.ItemReservationRequest(101L, 1, BigDecimal.valueOf(100.0), true),  // VIP Seat
+                        new ReserveInventoryCommand.ItemReservationRequest(201L, 2, BigDecimal.valueOf(50.0), false)   // General Standing
                 )
         );
     }
 
     @Test
-    @DisplayName("TẦNG 1 THẤT BẠI: Redis báo ghế đã bị giữ -> Chặn đứng ngay, TUYỆT ĐỐI không gọi DB")
-    void shouldFastFailAtRedis_WhenSeatAlreadyHeld_WithoutTouchingDatabase() {
-        // GIVEN: Ghế đã có người giữ trên Redis -> tryHold trả về false
-        when(inventoryHoldPort.tryHold(anyList(), eq("CUST-001"), any(Duration.class)))
-                .thenReturn(false);
+    @DisplayName("Đặt ghế: Redis Hold từ chối -> Ném lỗi ReservationIsHeld, DB không bị đụng đến")
+    void shouldRejectFast_WhenRedisHoldFails() {
+        when(inventoryHoldPort.tryHold(anyList(), anyString(), any(Duration.class))).thenReturn(false);
 
-        // WHEN & THEN: Phải ném ngoại lệ ReservationIsHeld
-        assertThatThrownBy(() -> reservationService.reserve(sampleCommand))
+        assertThatThrownBy(() -> reservationService.reserve(seatOnlyCommand))
                 .isInstanceOf(ReservationIsHeld.class);
 
-        // XÁC NHẬN BẢO VỆ DB: Hoàn toàn KHÔNG có bất kỳ lệnh nào chọc xuống Database
-        verifyNoInteractions(inventoryRepository);
-        verifyNoInteractions(reservationRepository);
-        verify(inventoryHoldPort, never()).releaseHold(anyList(), anyString());
-    }
-
-    @Test
-    @DisplayName("CƠ CHẾ ĐỀN BÙ: Khi DB bị lỗi -> Phải tự động gọi releaseHold để nhả ghế trên Redis")
-    void shouldCompensateAndReleaseRedisHold_WhenDatabaseFails() {
-        // GIVEN: Tầng 1 Redis giữ thành công
-        when(inventoryHoldPort.tryHold(anyList(), eq("CUST-001"), any(Duration.class)))
-                .thenReturn(true);
-
-        // Nhưng tầng 2 Database ném lỗi (ví dụ kho hết vé)
-        InventoryItem item101 = new InventoryItem(101L, "SEAT-101", "Seat 101", 1, 1, 0, 0L, Instant.now(), Instant.now()); // Hết vé vì capacity=1, reserved=1
-        InventoryItem item102 = new InventoryItem(102L, "SEAT-102", "Seat 102", 1, 0, 0, 0L, Instant.now(), Instant.now());
-        when(inventoryRepository.findAllByIdsInOrderWithLock(anyList()))
-                .thenReturn(List.of(item101, item102));
-
-        // WHEN & THEN: Sẽ ném InventoryInsufficientException
-        assertThatThrownBy(() -> reservationService.reserve(sampleCommand))
-                .isInstanceOf(InventoryInsufficientException.class);
-
-        // XÁC NHẬN ĐỀN BÙ: Phải gọi releaseHold trên Redis ngay lập tức để không giữ oan ghế!
-        verify(inventoryHoldPort, times(1)).releaseHold(List.of(101L, 102L), "CUST-001");
+        verify(inventoryRepository, never()).findAllByIdsInOrderWithLock(any());
         verify(reservationRepository, never()).save(any());
     }
 
     @Test
-    @DisplayName("HAPPY PATH: Redis giữ thành công VÀ Database lưu thành công")
-    void shouldReserveSuccessfully_WhenBothRedisAndDbSucceed() {
-        // GIVEN: Redis giữ thành công
-        when(inventoryHoldPort.tryHold(anyList(), eq("CUST-001"), any(Duration.class)))
-                .thenReturn(true);
+    @DisplayName("Đơn kết hợp Hybrid: Hold ghế VIP thành công, nhưng hết vé đứng trên Redis -> Bồi hoàn nhả ghế VIP")
+    void shouldReleaseHeldSeats_WhenStockDeductionFails() {
+        when(inventoryHoldPort.tryHold(anyList(), anyString(), any(Duration.class))).thenReturn(true);
+        when(inventoryStockCachePort.tryDeductStock(anyMap())).thenReturn(false);
 
-        // Database còn đủ vé
-        InventoryItem item101 = new InventoryItem(101L, "SEAT-101", "Seat 101", 10, 0, 0, 0L, Instant.now(), Instant.now());
-        InventoryItem item102 = new InventoryItem(102L, "SEAT-102", "Seat 102", 10, 0, 0, 0L, Instant.now(), Instant.now());
+        assertThatThrownBy(() -> reservationService.reserve(hybridCommand))
+                .isInstanceOf(InventoryInsufficientException.class);
+
+        // Xác nhận đã bồi hoàn nhả ghế VIP vừa giữ
+        verify(inventoryHoldPort).releaseHold(eq(List.of(101L)), eq("CUST-HYBRID"));
+        // Xác nhận DB chưa hề bị chạm vào
+        verify(inventoryRepository, never()).findAllByIdsInOrderWithLock(any());
+    }
+
+    @Test
+    @DisplayName("Đơn kết hợp: Redis qua hết nhưng DB ném lỗi -> Tự động bồi hoàn cả nhả ghế lẫn hoàn tồn kho")
+    void shouldCompensateBothHoldAndStock_WhenDatabaseFails() {
+        when(inventoryHoldPort.tryHold(anyList(), anyString(), any(Duration.class))).thenReturn(true);
+        when(inventoryStockCachePort.tryDeductStock(anyMap())).thenReturn(true);
         when(inventoryRepository.findAllByIdsInOrderWithLock(anyList()))
-                .thenReturn(List.of(item101, item102));
+                .thenThrow(new RuntimeException("Database connection timeout!"));
 
-        Reservation mockSavedReservation = new Reservation(
-                1L, "RES-TEST-001", Channel.ONLINE, ReservationStatus.PENDING, "CUST-001",
-                Instant.now().plus(Duration.ofMinutes(10)), 0L, List.of(), Instant.now(), Instant.now()
-        );
-        when(reservationRepository.save(any(Reservation.class))).thenReturn(mockSavedReservation);
+        assertThatThrownBy(() -> reservationService.reserve(hybridCommand))
+                .isInstanceOf(RuntimeException.class)
+                .hasMessageContaining("Database connection timeout!");
 
-        // WHEN
-        ReservationResult result = reservationService.reserve(sampleCommand);
+        // Xác nhận đã nhả ghế
+        verify(inventoryHoldPort).releaseHold(eq(List.of(101L)), eq("CUST-HYBRID"));
+        // Xác nhận đã hoàn trả tồn kho trên Redis
+        verify(inventoryStockCachePort).revertStock(eq(Map.of(201L, 2)));
+    }
 
-        // THEN
+    @Test
+    @DisplayName("Đơn kết hợp thành công trọn vẹn: Tạo Reservation PENDING và trừ kho chuẩn xác")
+    void shouldCompleteReservationSuccessfully_WhenAllPass() {
+        when(inventoryHoldPort.tryHold(anyList(), anyString(), any(Duration.class))).thenReturn(true);
+        when(inventoryStockCachePort.tryDeductStock(anyMap())).thenReturn(true);
+
+        InventoryItem seat101 = new InventoryItem(101L, "SEAT-101", "VIP 101", 1, 0, 0, 0L, Instant.now(), Instant.now());
+        InventoryItem stock201 = new InventoryItem(201L, "GA-201", "Standing Zone", 100, 0, 0, 0L, Instant.now(), Instant.now());
+        when(inventoryRepository.findAllByIdsInOrderWithLock(anyList())).thenReturn(List.of(seat101, stock201));
+
+        when(reservationRepository.save(any(Reservation.class))).thenAnswer(invocation -> invocation.getArgument(0));
+
+        ReservationResult result = reservationService.reserve(hybridCommand);
+
         assertThat(result).isNotNull();
-        assertThat(result.reservationCode()).isEqualTo("RES-TEST-001");
         assertThat(result.status()).isEqualTo(ReservationStatus.PENDING);
-
-        // Kiểm tra đúng thứ tự: tryHold được gọi trước khi lưu DB
-        verify(inventoryHoldPort, times(1)).tryHold(List.of(101L, 102L), "CUST-001", Duration.ofMinutes(10));
-        verify(reservationRepository, times(1)).save(any(Reservation.class));
-        verify(inventoryHoldPort, never()).releaseHold(anyList(), anyString());
+        assertThat(result.items()).hasSize(2);
+        assertThat(seat101.getReservedCapacity()).isEqualTo(1);
+        assertThat(stock201.getReservedCapacity()).isEqualTo(2);
     }
 }

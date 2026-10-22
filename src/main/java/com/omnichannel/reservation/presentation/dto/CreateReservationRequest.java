@@ -30,6 +30,12 @@ public record CreateReservationRequest(
             @Positive(message = "Quantity must be strictly positive")
             int quantity,
 
-            BigDecimal unitPrice
-    ) {}
+            BigDecimal unitPrice,
+
+            Boolean isAssignedSeat
+    ) {
+        public boolean assignedSeat() {
+            return isAssignedSeat != null ? isAssignedSeat : (quantity == 1);
+        }
+    }
 }

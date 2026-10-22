@@ -34,7 +34,8 @@ public class ReservationController {
                 .map(it -> new ReserveInventoryCommand.ItemReservationRequest(
                         it.inventoryItemId(),
                         it.quantity(),
-                        it.unitPrice()))
+                        it.unitPrice(),
+                        it.assignedSeat()))
                 .toList();
 
         ReserveInventoryCommand command = new ReserveInventoryCommand(

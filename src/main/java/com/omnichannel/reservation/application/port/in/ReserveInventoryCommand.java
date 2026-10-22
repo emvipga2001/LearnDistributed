@@ -15,6 +15,11 @@ public record ReserveInventoryCommand(
     public record ItemReservationRequest(
             Long inventoryItemId,
             int quantity,
-            BigDecimal unitPrice
-    ) {}
+            BigDecimal unitPrice,
+            boolean isAssignedSeat
+    ) {
+        public ItemReservationRequest(Long inventoryItemId, int quantity, BigDecimal unitPrice) {
+            this(inventoryItemId, quantity, unitPrice, quantity == 1);
+        }
+    }
 }
