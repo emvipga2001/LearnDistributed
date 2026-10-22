@@ -1,0 +1,17 @@
+d:\Work\Projects\System Distributed\
+├── .agents/skills/omnichannel-reservation-mentor/SKILL.md
+├── docker-compose.yml             # Postgres 16, Redis 7, RabbitMQ 3.13-management
+├── pom.xml                        # Java 21, Virtual Threads, Spring Boot 3.3.4, Redisson, Flyway
+├── mvnw / mvnw.cmd                # Maven Wrapper
+└── src/
+    ├── main/
+    │   ├── java/com/omnichannel/reservation/
+    │   │   ├── domain/            # Pure Business Logic: InventoryItem, Reservation, Ports
+    │   │   ├── application/       # UseCases, Commands, ReservationService (Deadlock-safe)
+    │   │   ├── infrastructure/    # JPA Entities, Redisson, RabbitMQ Topology, Adapters
+    │   │   └── presentation/      # REST API, RFC 7807 ProblemDetail Advice
+    │   └── resources/
+    │       ├── application.yml    # Virtual Threads: spring.threads.virtual.enabled=true
+    │       ├── application-local.yml
+    │       └── db/migration/V1__init_schema.sql
+    └── test/                      # Testcontainers & Unit Slice Config
