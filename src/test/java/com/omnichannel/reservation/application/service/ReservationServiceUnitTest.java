@@ -1,9 +1,13 @@
 package com.omnichannel.reservation.application.service;
 
+import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule;
 import com.omnichannel.reservation.application.dto.ReservationResult;
+import com.omnichannel.reservation.application.model.OutboxEvent;
 import com.omnichannel.reservation.application.port.in.ReserveInventoryCommand;
 import com.omnichannel.reservation.application.port.out.InventoryHoldPort;
 import com.omnichannel.reservation.application.port.out.InventoryStockCachePort;
+import com.omnichannel.reservation.application.port.out.OutboxEventPort;
 import com.omnichannel.reservation.domain.exception.InventoryInsufficientException;
 import com.omnichannel.reservation.domain.exception.ReservationIsHeld;
 import com.omnichannel.reservation.domain.model.Channel;
@@ -18,6 +22,7 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.InjectMocks;
 import org.mockito.Mock;
+import org.mockito.Spy;
 import org.mockito.junit.jupiter.MockitoExtension;
 
 import java.math.BigDecimal;
@@ -45,6 +50,12 @@ class ReservationServiceUnitTest {
 
     @Mock
     private InventoryStockCachePort inventoryStockCachePort;
+
+    @Mock
+    private OutboxEventPort outboxEventPort;
+
+    @Spy
+    private ObjectMapper objectMapper = new ObjectMapper().registerModule(new JavaTimeModule());
 
     @InjectMocks
     private ReservationService reservationService;
@@ -85,6 +96,7 @@ class ReservationServiceUnitTest {
 
         verify(inventoryRepository, never()).findAllByIdsInOrderWithLock(any());
         verify(reservationRepository, never()).save(any());
+        verify(outboxEventPort, never()).save(any());
     }
 
     @Test
@@ -100,6 +112,7 @@ class ReservationServiceUnitTest {
         verify(inventoryHoldPort).releaseHold(eq(List.of(101L)), eq("CUST-HYBRID"));
         // Xác nhận DB chưa hề bị chạm vào
         verify(inventoryRepository, never()).findAllByIdsInOrderWithLock(any());
+        verify(outboxEventPort, never()).save(any());
     }
 
     @Test
@@ -118,10 +131,12 @@ class ReservationServiceUnitTest {
         verify(inventoryHoldPort).releaseHold(eq(List.of(101L)), eq("CUST-HYBRID"));
         // Xác nhận đã hoàn trả tồn kho trên Redis
         verify(inventoryStockCachePort).revertStock(eq(Map.of(201L, 2)));
+        // Outbox không được lưu
+        verify(outboxEventPort, never()).save(any());
     }
 
     @Test
-    @DisplayName("Đơn kết hợp thành công trọn vẹn: Tạo Reservation PENDING và trừ kho chuẩn xác")
+    @DisplayName("Đơn kết hợp thành công trọn vẹn: Tạo Reservation PENDING và lưu OutboxEvent vào Database")
     void shouldCompleteReservationSuccessfully_WhenAllPass() {
         when(inventoryHoldPort.tryHold(anyList(), anyString(), any(Duration.class))).thenReturn(true);
         when(inventoryStockCachePort.tryDeductStock(anyMap())).thenReturn(true);
@@ -130,7 +145,21 @@ class ReservationServiceUnitTest {
         InventoryItem stock201 = new InventoryItem(201L, "GA-201", "Standing Zone", 100, 0, 0, 0L, Instant.now(), Instant.now());
         when(inventoryRepository.findAllByIdsInOrderWithLock(anyList())).thenReturn(List.of(seat101, stock201));
 
-        when(reservationRepository.save(any(Reservation.class))).thenAnswer(invocation -> invocation.getArgument(0));
+        when(reservationRepository.save(any(Reservation.class))).thenAnswer(invocation -> {
+            Reservation r = invocation.getArgument(0);
+            return new Reservation(
+                    1L,
+                    r.getReservationCode(),
+                    r.getChannel(),
+                    r.getStatus(),
+                    r.getCustomerId(),
+                    r.getExpiresAt(),
+                    r.getVersion(),
+                    r.getItems(),
+                    r.getCreatedAt(),
+                    r.getUpdatedAt()
+            );
+        });
 
         ReservationResult result = reservationService.reserve(hybridCommand);
 
@@ -139,5 +168,8 @@ class ReservationServiceUnitTest {
         assertThat(result.items()).hasSize(2);
         assertThat(seat101.getReservedCapacity()).isEqualTo(1);
         assertThat(stock201.getReservedCapacity()).isEqualTo(2);
+
+        // 🔥 XÁC NHẬN SỰ KIỆN OUTBOX ĐÃ ĐƯỢC LƯU
+        verify(outboxEventPort, times(1)).save(any(OutboxEvent.class));
     }
 }

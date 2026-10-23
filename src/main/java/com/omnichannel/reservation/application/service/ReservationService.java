@@ -1,10 +1,15 @@
 package com.omnichannel.reservation.application.service;
 
+import com.fasterxml.jackson.core.JsonProcessingException;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import com.omnichannel.reservation.application.dto.ReservationResult;
+import com.omnichannel.reservation.application.model.OutboxEvent;
 import com.omnichannel.reservation.application.port.in.ReserveInventoryCommand;
 import com.omnichannel.reservation.application.port.in.ReserveInventoryUseCase;
 import com.omnichannel.reservation.application.port.out.InventoryHoldPort;
 import com.omnichannel.reservation.application.port.out.InventoryStockCachePort;
+import com.omnichannel.reservation.application.port.out.OutboxEventPort;
+import com.omnichannel.reservation.domain.event.ReservationCreatedEvent;
 import com.omnichannel.reservation.domain.exception.InventoryInsufficientException;
 import com.omnichannel.reservation.domain.exception.ReservationIsHeld;
 import com.omnichannel.reservation.domain.model.InventoryItem;
@@ -31,6 +36,8 @@ public class ReservationService implements ReserveInventoryUseCase {
     private final ReservationRepository reservationRepository;
     private final InventoryHoldPort inventoryHoldPort;
     private final InventoryStockCachePort inventoryStockCachePort;
+    private final OutboxEventPort outboxEventPort;
+    private final ObjectMapper objectMapper;
 
     @Override
     @Transactional
@@ -112,7 +119,34 @@ public class ReservationService implements ReserveInventoryUseCase {
             throw ex;
         }
 
-        // 5. Khởi tạo đối tượng Reservation Aggregate
+        // 5. Lưu đơn hàng vào Database (Aggregate Persistence)
+        Reservation savedReservation = saveReservationAggregate(command);
+
+        // 6. Ghi sự kiện vào Outbox trong cùng Transaction (Transactional Outbox)
+        recordOutboxEvent(savedReservation);
+
+        log.info("Successfully created reservationCode: {}, expiresAt: {}",
+                savedReservation.getReservationCode(), savedReservation.getExpiresAt());
+
+        List<ReservationResult.ReservationItemResult> itemResults = savedReservation.getItems().stream()
+                .map(item -> new ReservationResult.ReservationItemResult(item.getId(), item.getInventoryItemId(), item.getQuantity()))
+                .toList();
+
+        return new ReservationResult(
+                savedReservation.getId(),
+                savedReservation.getReservationCode(),
+                savedReservation.getChannel(),
+                savedReservation.getStatus(),
+                savedReservation.getCustomerId(),
+                savedReservation.getExpiresAt(),
+                itemResults
+        );
+    }
+
+    /**
+     * Tách riêng hàm lưu trữ đơn đặt chỗ (Reservation Aggregate).
+     */
+    private Reservation saveReservationAggregate(ReserveInventoryCommand command) {
         Instant expiresAt = Instant.now().plus(command.holdDuration());
         String reservationCode = "RES-" + UUID.randomUUID().toString().substring(0, 8).toUpperCase();
 
@@ -133,22 +167,64 @@ public class ReservationService implements ReserveInventoryUseCase {
                 Instant.now()
         );
 
-        Reservation savedReservation = reservationRepository.save(reservation);
+        return reservationRepository.save(reservation);
+    }
 
-        log.info("Successfully created reservationCode: {}, expiresAt: {}", reservationCode, expiresAt);
-
-        List<ReservationResult.ReservationItemResult> itemResults = savedReservation.getItems().stream()
-                .map(item -> new ReservationResult.ReservationItemResult(item.getId(), item.getInventoryItemId(), item.getQuantity()))
+    /**
+     * Tách riêng hàm đóng gói và lưu sự kiện vào Outbox (Transactional Outbox Pattern).
+     * Hàm này chạy trong cùng 1 Transaction với hàm lưu đơn hàng ở trên để đảm bảo tính nguyên tử tuyệt đối (ACID).
+     */
+    private void recordOutboxEvent(Reservation savedReservation) {
+        // Dòng 1: Chuyển đổi các Entity con (ReservationItem) sang DTO Payload công khai
+        // Mục đích: Không để lộ Entity nội bộ ra ngoài, chỉ gửi đúng dữ liệu công khai mà các service khác cần
+        List<ReservationCreatedEvent.ReservationItemPayload> reservationItemPayloads = savedReservation.getItems().stream()
+                .map(item -> new ReservationCreatedEvent.ReservationItemPayload(
+                        item.getId(),
+                        item.getInventoryItemId(),
+                        item.getQuantity(),
+                        item.getUnitPrice()))
                 .toList();
 
-        return new ReservationResult(
+        // Dòng 2: Khởi tạo đối tượng Domain Event bất biến (Record)
+        // Mục đích: Đóng gói toàn bộ ngữ cảnh sự việc đã xảy ra (Event-Carried State Transfer)
+        ReservationCreatedEvent event = ReservationCreatedEvent.of(
                 savedReservation.getId(),
                 savedReservation.getReservationCode(),
+                savedReservation.getCustomerId(),
                 savedReservation.getChannel(),
                 savedReservation.getStatus(),
-                savedReservation.getCustomerId(),
                 savedReservation.getExpiresAt(),
-                itemResults
+                reservationItemPayloads
         );
+
+        // Dòng 3: Serialize (Chuyển đổi) Domain Event thành chuỗi văn bản JSON
+        // Mục đích: Để cột JSONB trong bảng outbox_events có thể lưu bất kỳ loại sự kiện nào mà không cần tạo nhiều bảng
+        String payloadJson;
+        try {
+            payloadJson = objectMapper.writeValueAsString(event);
+        } catch (JsonProcessingException ex) {
+            log.error("Failed to serialize ReservationCreatedEvent to JSON", ex);
+            // Nếu lỗi parse JSON -> Ném ngoại lệ để Spring @Transactional rollback toàn bộ giao dịch, không lưu đơn rác
+            throw new IllegalStateException("Failed to serialize Outbox event payload", ex);
+        }
+
+        // Dòng 4: Xác định khóa định danh của Aggregate (Ưu tiên Database ID, fallback về mã code)
+        // Mục đích: Phục vụ việc đánh chỉ mục, truy vết và phân luồng thứ tự (Partitioning) sau này
+        String aggregateId = savedReservation.getId() != null
+                ? savedReservation.getId().toString()
+                : savedReservation.getReservationCode();
+
+        // Dòng 5: Đóng gói thành bản ghi OutboxEvent (Chiếc phong bì thư có nhãn)
+        // Mục đích: Gắn nhãn aggregateType và eventType để Worker đọc được mà không cần bóc nội dung JSON
+        OutboxEvent outboxEvent = OutboxEvent.of(
+                "RESERVATION",
+                aggregateId,
+                "ReservationCreatedEvent",
+                payloadJson
+        );
+
+        // Dòng 6: Gọi Outbound Port để lưu bản ghi Outbox vào bảng outbox_events trong Database
+        // Mục đích: Nhét thư vào hộp thư trên cùng một kết nối DB, cam kết At-Least-Once Delivery
+        outboxEventPort.save(outboxEvent);
     }
 }
