@@ -13,7 +13,7 @@ import java.time.Instant;
 @Getter
 @Setter
 @NoArgsConstructor
-public class ReservationItemJpaEntity {
+public class ReservationItemJpaEntity extends BaseEntity {
 
     @Id
     @GeneratedValue(strategy = GenerationType.IDENTITY)
@@ -32,6 +32,5 @@ public class ReservationItemJpaEntity {
     @Column(name = "unit_price", nullable = false, precision = 12, scale = 2)
     private BigDecimal unitPrice = BigDecimal.ZERO;
 
-    @Column(name = "created_at", nullable = false, updatable = false)
-    private Instant createdAt = Instant.now();
+
 }

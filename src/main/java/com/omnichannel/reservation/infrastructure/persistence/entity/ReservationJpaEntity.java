@@ -16,7 +16,7 @@ import java.util.List;
 @Getter
 @Setter
 @NoArgsConstructor
-public class ReservationJpaEntity {
+public class ReservationJpaEntity extends BaseUpdatableEntity {
 
     @Id
     @GeneratedValue(strategy = GenerationType.IDENTITY)
@@ -46,11 +46,7 @@ public class ReservationJpaEntity {
     @OneToMany(mappedBy = "reservation", cascade = CascadeType.ALL, orphanRemoval = true, fetch = FetchType.LAZY)
     private List<ReservationItemJpaEntity> items = new ArrayList<>();
 
-    @Column(name = "created_at", nullable = false, updatable = false)
-    private Instant createdAt = Instant.now();
 
-    @Column(name = "updated_at", nullable = false)
-    private Instant updatedAt = Instant.now();
 
     public void addItem(ReservationItemJpaEntity item) {
         items.add(item);

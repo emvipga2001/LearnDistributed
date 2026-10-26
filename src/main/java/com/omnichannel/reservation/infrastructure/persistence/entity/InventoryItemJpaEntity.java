@@ -12,7 +12,7 @@ import java.time.Instant;
 @Getter
 @Setter
 @NoArgsConstructor
-public class InventoryItemJpaEntity {
+public class InventoryItemJpaEntity extends BaseUpdatableEntity {
 
     @Id
     @GeneratedValue(strategy = GenerationType.IDENTITY)
@@ -37,9 +37,5 @@ public class InventoryItemJpaEntity {
     @Column(name = "version", nullable = false)
     private Long version;
 
-    @Column(name = "created_at", nullable = false, updatable = false)
-    private Instant createdAt = Instant.now();
 
-    @Column(name = "updated_at", nullable = false)
-    private Instant updatedAt = Instant.now();
 }
