@@ -1,6 +1,6 @@
 # Omnichannel Booking & Inventory Reservation Engine (LearnDistributed)
 
-Dự án thực chiến xây dựng nền tảng đặt phòng, vé và quản lý tồn kho đa kênh tích hợp quầy POS Offline và Online theo chuẩn Production, áp dụng **Clean Architecture / Domain-Driven Design (DDD)** và phương pháp **Problem-First & Chaos Injection**.
+Dự án thực chiến xây dựng nền tảng đặt phòng, vé và quản lý tồn kho đa kênh tích hợp quầy POS Offline và Online theo chuẩn Production, áp dụng **Clean Architecture / Domain-Driven Design (DDD)** theo mô hình **Bounded Contexts (Package-by-Feature)** và phương pháp **Problem-First & Chaos Injection**.
 
 ---
 
@@ -12,42 +12,40 @@ Dự án thực chiến xây dựng nền tảng đặt phòng, vé và quản l
   - PostgreSQL 16 (Port `5433` - tránh xung đột với Postgres 5432 native của máy).
   - Redis 7 (Port `6379`) & Redisson 3.36.0 (Distributed Lock, Atomic Lua Script Guard).
   - RabbitMQ 3.13-management (Ports `5672`, `15672`).
-* **Database Migration**: Flyway (`V1__init_schema.sql`, `V2__seed_sample_data.sql`).
+* **Database Migration**: Flyway (`V1__init_schema.sql`, `V2__seed_sample_data.sql`, `V3__add_merchandise_schema.sql`).
 * **Kiểm thử**: JUnit 5, Mockito, Testcontainers, k6 Load Testing.
 
 ---
 
-## 🏛️ Cấu Trúc Mã Nguồn (Clean Architecture / Hexagonal)
+## 🏛️ Cấu Trúc Mã Nguồn (Bounded Contexts / Package-by-Feature)
+
+Dự án được phân chia theo các phân hệ nghiệp vụ độc lập, trong mỗi phân hệ tuân thủ nghiêm ngặt **Clean Architecture (Hexagonal)**:
 
 ```text
 src/main/java/com/omnichannel/reservation/
-├── domain/                      # 100% PURE BUSINESS LOGIC (Zero framework dependencies)
-│   ├── event/                   # Domain Events: ReservationCreatedEvent
-│   ├── model/                   # Aggregates & Entities: InventoryItem, Reservation, ReservationItem, Channel
-│   ├── exception/               # Domain Exceptions: InventoryInsufficientException, ReservationIsHeld, ReservationNotFoundException
-│   └── repository/              # Domain Port Interfaces: InventoryRepository, ReservationRepository
+├── shared/                         # 🌐 HẠ TẦNG & THÀNH PHẦN DÙNG CHUNG
+│   ├── domain/                     # BaseEntity, BaseUpdatableEntity, Channel, BusinessException
+│   ├── infrastructure/config/      # OpenApiConfig, RabbitMqConfig, RedisConfig
+│   └── presentation/exception/     # GlobalExceptionHandler (RFC 7807 ProblemDetail Advice)
 │
-├── application/                 # USE CASES & ORCHESTRATION
-│   ├── model/                   # Application Models: OutboxEvent
-│   ├── port/
-│   │   ├── in/                  # Inbound Driving Ports: ReserveInventoryUseCase, ReserveInventoryCommand
-│   │   └── out/                 # Outbound Driven Ports: InventoryHoldPort, InventoryStockCachePort, OutboxEventPort
-│   ├── dto/                     # Application DTOs: ReservationResult
-│   └── service/                 # Use Case Implementations: ReservationService (Transactional Outbox + L1 Dual-Guard)
+├── booking/                        # 🎯 PHÂN HỆ ĐẶT CHỖ (Reservation Bounded Context)
+│   ├── domain/                     # Reservation, ReservationItem, ReservationStatus, Events
+│   ├── application/                # ReservationService, ReserveInventoryUseCase, Command
+│   ├── infrastructure/             # ReservationJpaEntity, SpringDataReservationJpaRepository
+│   └── presentation/               # ReservationController, CreateReservationRequest
 │
-├── infrastructure/              # ADAPTERS & EXTERNAL TOOLS
-│   ├── config/                  # OpenApiConfig, RedisConfig, RabbitMqConfig
-│   ├── messaging/               # OutboxDispatcher (Background Poller Worker với @Scheduled)
-│   ├── persistence/             # Spring Data JPA Entities, Repositories, Repository Adapters
-│   │   ├── entity/              # BaseEntity, BaseUpdatableEntity, OutboxEventJpaEntity, InventoryItemJpaEntity...
-│   │   ├── repository/          # SpringDataOutboxJpaRepository (SKIP LOCKED query)
-│   │   └── adapter/             # OutboxRepositoryAdapter
-│   └── redis/                   # RedisInventoryHoldAdapter, RedisInventoryStockAdapter
+├── inventory/                      # 🎫 PHÂN HỆ KHO VÉ & GHẾ (Inventory Bounded Context)
+│   ├── domain/                     # InventoryItem, InventoryRepository, Domain Exceptions
+│   ├── application/port/out/       # InventoryHoldPort, InventoryStockCachePort
+│   └── infrastructure/             # Redis Hold & Stock Adapters, SpringDataInventoryJpaRepository
 │
-└── presentation/                # DRIVERS (REST API / WEB)
-    ├── rest/                    # ReservationController
-    ├── dto/                     # CreateReservationRequest, ReservationResponse
-    └── exception/               # GlobalExceptionHandler (RFC 7807 ProblemDetail Advice)
+├── merchandise/                    # 🎁 PHÂN HỆ VẬT PHẨM CỔ VŨ (Merchandise Bounded Context)
+│   ├── domain/                     # MerchandiseItem, ReservationMerchandise, MerchandiseRepository
+│   └── infrastructure/             # MerchandiseJpaEntity, SpringDataMerchandiseJpaRepository
+│
+└── outbox/                         # 📨 HỆ THỐNG SỰ KIỆN GIAO DỊCH (Transactional Outbox)
+    ├── application/                # OutboxEvent, OutboxEventPort
+    └── infrastructure/             # OutboxEventJpaEntity, SpringDataOutboxJpaRepository (SKIP LOCKED), OutboxDispatcher
 ```
 
 ---
@@ -85,7 +83,7 @@ Kiểm tra các container đã chạy:
 
 ### 4. Chạy toàn bộ bài kiểm thử (Tests)
 ```bash
-# Chạy toàn bộ unit test (Service, Outbox Dispatcher, Outbox Persistence Adapter):
+# Chạy toàn bộ unit test (Booking Service, Outbox Dispatcher, Outbox Persistence Adapter):
 .\mvnw.cmd test "-Dtest=ReservationServiceUnitTest,OutboxDispatcherTest,OutboxRepositoryAdapterTest"
 
 # Chạy Integration Test kiểm tra Redis Lua Script giữ ghế:
@@ -135,10 +133,10 @@ Dành cho việc kiểm tra toàn bộ luồng hoạt động trực quan từ A
 ### ✅ ĐÃ HOÀN THÀNH (Completed)
 
 #### 1. Khởi tạo Khung Dự án & Hạ tầng chuẩn Clean Architecture
-- [x] Cấu trúc đa tầng DDD (Domain - Application - Infrastructure - Presentation).
+- [x] Tái cấu trúc theo **Bounded Contexts (Package-by-Feature)**: `booking`, `inventory`, `merchandise`, `outbox`, `shared`.
 - [x] Docker Compose quản lý 3 service (PostgreSQL 16, Redis 7, RabbitMQ 3.13) với healthcheck.
 - [x] Kích hoạt Virtual Threads Java 21 (`spring.threads.virtual.enabled=true`).
-- [x] Khởi tạo Flyway migration `V1__init_schema.sql` (schema cốt lõi) và `V2__seed_sample_data.sql` (dữ liệu mẫu kiểm thử).
+- [x] Khởi tạo Flyway migration `V1__init_schema.sql`, `V2__seed_sample_data.sql`, `V3__add_merchandise_schema.sql`.
 
 #### 2. Case Study 1: Multi-Item Deadlock trong đặt giữ chỗ theo nhóm
 - [x] **Vấn đề**: 2 giao dịch đồng thời đặt chéo ghế (`[101 -> 102]` vs `[102 -> 101]`) gây ra chu trình chờ khóa (Circular Wait / Lỗi `40P01` của PostgreSQL).
@@ -177,6 +175,10 @@ Dành cho việc kiểm tra toàn bộ luồng hoạt động trực quan từ A
 ---
 
 ### ⏳ KẾ HOẠCH BÀI TIẾP THEO (Up Next)
+* **Giai đoạn 2 - Case Study 3 (Mở rộng Merchandise Bundle & Add-on)**:
+  - Hoàn thiện nghiệp vụ VIP tự động có sẵn Merchandise Kit (Lightstick + Banner).
+  - Chặn vé VIP mua thêm Merch lẻ; chỉ cho phép vé thường mua thêm add-on.
+  - Outbox Event bắn thông tin Merchandise sang hệ thống Kho Vận (Fulfillment).
 * **Giai đoạn 2 - Case Study 4**: Distributed Idempotency 2 tầng (Redis TTL L1 + DB Unique Key L2) chống duplicate request từ client hoặc network retry.
 * **Giai đoạn 3**: Distributed Saga Orchestration State Machine (Giữ chỗ -> Thanh toán -> Trừ kho -> Xuất vé) kèm Compensating Transactions.
 * **Giai đoạn 4**: Đồng bộ kho Đa kênh (Offline POS Counter vs Online App) giải quyết bài toán rớt mạng Split-Brain.

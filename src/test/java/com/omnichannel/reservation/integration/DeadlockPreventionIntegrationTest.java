@@ -1,13 +1,15 @@
 package com.omnichannel.reservation.integration;
 
-import com.omnichannel.reservation.application.dto.ReservationResult;
-import com.omnichannel.reservation.application.port.in.ReserveInventoryCommand;
-import com.omnichannel.reservation.application.port.in.ReserveInventoryUseCase;
-import com.omnichannel.reservation.domain.exception.InventoryInsufficientException;
-import com.omnichannel.reservation.domain.model.Channel;
-import com.omnichannel.reservation.infrastructure.persistence.entity.InventoryItemJpaEntity;
-import com.omnichannel.reservation.infrastructure.persistence.repository.SpringDataInventoryJpaRepository;
-import com.omnichannel.reservation.infrastructure.persistence.repository.SpringDataReservationJpaRepository;
+import com.omnichannel.reservation.inventory.domain.exception.ReservationIsHeld;
+
+import com.omnichannel.reservation.booking.application.dto.ReservationResult;
+import com.omnichannel.reservation.booking.application.port.in.ReserveInventoryCommand;
+import com.omnichannel.reservation.booking.application.port.in.ReserveInventoryUseCase;
+import com.omnichannel.reservation.inventory.domain.exception.InventoryInsufficientException;
+import com.omnichannel.reservation.shared.domain.model.Channel;
+import com.omnichannel.reservation.inventory.infrastructure.persistence.entity.InventoryItemJpaEntity;
+import com.omnichannel.reservation.inventory.infrastructure.persistence.repository.SpringDataInventoryJpaRepository;
+import com.omnichannel.reservation.booking.infrastructure.persistence.repository.SpringDataReservationJpaRepository;
 import lombok.extern.slf4j.Slf4j;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
@@ -142,7 +144,7 @@ public class DeadlockPreventionIntegrationTest {
                                 " Thread-%03d | %s | Input: %s -> [REJECTED] Kho hết vé | Time: %3d ms",
                                 threadIdx, customerId, orderDisplay, duration
                         ));
-                    } catch (com.omnichannel.reservation.domain.exception.ReservationIsHeld ex) {
+                    } catch (com.omnichannel.reservation.inventory.domain.exception.ReservationIsHeld ex) {
                         long duration = System.currentTimeMillis() - startTime;
                         insufficientCount.incrementAndGet();
                         executionLogs.add(String.format(
