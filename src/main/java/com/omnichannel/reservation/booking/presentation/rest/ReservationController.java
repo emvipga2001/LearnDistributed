@@ -25,7 +25,7 @@ public class ReservationController {
     private final ReserveInventoryUseCase reserveInventoryUseCase;
 
     @PostMapping
-    @Operation(summary = "Create an inventory reservation", description = "Acquires hold lock on inventory items and reserves optional merchandise for specified hold duration")
+    @Operation(summary = "Create an inventory reservation", description = "Acquires hold lock on inventory items for specified hold duration")
     public ResponseEntity<ReservationResponse> reserve(
             @RequestHeader(value = "X-Idempotency-Key", required = false) String idempotencyKey,
             @Valid @RequestBody CreateReservationRequest request) {
@@ -56,6 +56,10 @@ public class ReservationController {
                 .map(it -> new ReservationResponse.ItemResponse(it.itemId(), it.inventoryItemId(), it.quantity()))
                 .toList();
 
+        List<ReservationResponse.MerchandiseResponse> merchandiseResponses = result.merchandises().stream()
+                .map(m -> new ReservationResponse.MerchandiseResponse(m.id(), m.merchandiseId(), m.quantity(), m.unitPrice()))
+                .toList();
+
         ReservationResponse response = new ReservationResponse(
                 result.reservationId(),
                 result.reservationCode(),
@@ -63,7 +67,8 @@ public class ReservationController {
                 result.status(),
                 result.customerId(),
                 result.expiresAt(),
-                itemResponses
+                itemResponses,
+                merchandiseResponses
         );
 
         return ResponseEntity.status(HttpStatus.CREATED).body(response);

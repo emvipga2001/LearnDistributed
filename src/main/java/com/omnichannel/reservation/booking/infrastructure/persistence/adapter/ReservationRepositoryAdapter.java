@@ -6,9 +6,12 @@ import com.omnichannel.reservation.booking.domain.repository.ReservationReposito
 import com.omnichannel.reservation.booking.infrastructure.persistence.entity.ReservationItemJpaEntity;
 import com.omnichannel.reservation.booking.infrastructure.persistence.entity.ReservationJpaEntity;
 import com.omnichannel.reservation.booking.infrastructure.persistence.repository.SpringDataReservationJpaRepository;
+import com.omnichannel.reservation.merchandise.domain.model.ReservationMerchandise;
+import com.omnichannel.reservation.merchandise.infrastructure.persistence.entity.ReservationMerchandiseJpaEntity;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Component;
 
+import java.util.Collections;
 import java.util.List;
 import java.util.Optional;
 
@@ -41,6 +44,17 @@ public class ReservationRepositoryAdapter implements ReservationRepository {
             }
         }
 
+        if (reservation.getMerchandises() != null) {
+            for (ReservationMerchandise domainMerch : reservation.getMerchandises()) {
+                ReservationMerchandiseJpaEntity merchEntity = new ReservationMerchandiseJpaEntity();
+                merchEntity.setId(domainMerch.getId());
+                merchEntity.setMerchandiseId(domainMerch.getMerchandiseId());
+                merchEntity.setQuantity(domainMerch.getQuantity());
+                merchEntity.setUnitPrice(domainMerch.getUnitPrice());
+                entity.addMerchandise(merchEntity);
+            }
+        }
+
         ReservationJpaEntity saved = jpaRepository.save(entity);
         return toDomain(saved);
     }
@@ -56,14 +70,27 @@ public class ReservationRepositoryAdapter implements ReservationRepository {
     }
 
     private Reservation toDomain(ReservationJpaEntity entity) {
-        List<ReservationItem> items = entity.getItems().stream()
-                .map(item -> new ReservationItem(
-                        item.getId(),
-                        item.getInventoryItemId(),
-                        item.getQuantity(),
-                        item.getUnitPrice(),
-                        item.getCreatedAt()))
-                .toList();
+        List<ReservationItem> items = entity.getItems() != null
+                ? entity.getItems().stream()
+                        .map(item -> new ReservationItem(
+                                item.getId(),
+                                item.getInventoryItemId(),
+                                item.getQuantity(),
+                                item.getUnitPrice(),
+                                item.getCreatedAt()))
+                        .toList()
+                : Collections.emptyList();
+
+        List<ReservationMerchandise> merchandises = entity.getMerchandises() != null
+                ? entity.getMerchandises().stream()
+                        .map(merch -> new ReservationMerchandise(
+                                merch.getId(),
+                                merch.getMerchandiseId(),
+                                merch.getQuantity(),
+                                merch.getUnitPrice(),
+                                merch.getCreatedAt()))
+                        .toList()
+                : Collections.emptyList();
 
         return new Reservation(
                 entity.getId(),
@@ -74,6 +101,7 @@ public class ReservationRepositoryAdapter implements ReservationRepository {
                 entity.getExpiresAt(),
                 entity.getVersion(),
                 items,
+                merchandises,
                 entity.getCreatedAt(),
                 entity.getUpdatedAt()
         );

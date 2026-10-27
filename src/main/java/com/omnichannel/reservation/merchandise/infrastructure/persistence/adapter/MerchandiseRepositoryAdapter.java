@@ -1,7 +1,5 @@
 package com.omnichannel.reservation.merchandise.infrastructure.persistence.adapter;
 
-import com.omnichannel.reservation.inventory.domain.model.InventoryItem;
-import com.omnichannel.reservation.inventory.infrastructure.persistence.entity.InventoryItemJpaEntity;
 import com.omnichannel.reservation.merchandise.domain.model.MerchandiseItem;
 import com.omnichannel.reservation.merchandise.domain.repository.MerchandiseRepository;
 import com.omnichannel.reservation.merchandise.infrastructure.persistence.entity.MerchandiseJpaEntity;
@@ -10,7 +8,9 @@ import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Component;
 
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
+import java.util.stream.Collectors;
 
 @Component
 @RequiredArgsConstructor
@@ -32,12 +32,36 @@ public class MerchandiseRepositoryAdapter implements MerchandiseRepository {
 
     @Override
     public void save(MerchandiseItem merchandiseItem) {
-
+        MerchandiseJpaEntity entity = repository.findById(merchandiseItem.getId())
+                .orElseGet(MerchandiseJpaEntity::new);
+        entity.setItemCode(merchandiseItem.getItemCode());
+        entity.setItemName(merchandiseItem.getItemName());
+        entity.setTotalStock(merchandiseItem.getTotalStock());
+        entity.setReservedStock(merchandiseItem.getReservedStock());
+        entity.setUnitPrice(merchandiseItem.getUnitPrice());
+        repository.save(entity);
     }
 
     @Override
     public void saveAll(List<MerchandiseItem> merchandiseItems) {
+        if (merchandiseItems == null || merchandiseItems.isEmpty()) {
+            return;
+        }
+        List<Long> ids = merchandiseItems.stream().map(MerchandiseItem::getId).toList();
+        Map<Long, MerchandiseJpaEntity> entityMap = repository.findAllById(ids).stream()
+                .collect(Collectors.toMap(MerchandiseJpaEntity::getId, e -> e));
 
+        List<MerchandiseJpaEntity> toSave = merchandiseItems.stream().map(item -> {
+            MerchandiseJpaEntity entity = entityMap.getOrDefault(item.getId(), new MerchandiseJpaEntity());
+            entity.setItemCode(item.getItemCode());
+            entity.setItemName(item.getItemName());
+            entity.setTotalStock(item.getTotalStock());
+            entity.setReservedStock(item.getReservedStock());
+            entity.setUnitPrice(item.getUnitPrice());
+            return entity;
+        }).toList();
+
+        repository.saveAll(toSave);
     }
 
     private MerchandiseItem toDomain(MerchandiseJpaEntity entity) {

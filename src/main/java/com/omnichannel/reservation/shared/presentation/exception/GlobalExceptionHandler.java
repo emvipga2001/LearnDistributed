@@ -1,6 +1,7 @@
 package com.omnichannel.reservation.shared.presentation.exception;
 
 import com.omnichannel.reservation.booking.domain.model.Reservation;
+import com.omnichannel.reservation.inventory.domain.exception.HaveMerchandise;
 import com.omnichannel.reservation.inventory.domain.exception.ReservationIsHeld;
 
 import com.omnichannel.reservation.inventory.domain.exception.InventoryInsufficientException;
@@ -35,6 +36,16 @@ public class GlobalExceptionHandler {
         ProblemDetail problem = ProblemDetail.forStatusAndDetail(HttpStatus.CONFLICT, ex.getMessage());
         problem.setTitle("Table Is Already Held");
         problem.setType(URI.create("https://api.omnichannel.com/errors/table-already-held"));
+        problem.setProperty("timestamp", Instant.now());
+        problem.setProperty("path", request.getRequestURI());
+        return problem;
+    }
+
+    @ExceptionHandler(HaveMerchandise.class)
+    public ProblemDetail handleHaveMerchandise(HaveMerchandise ex, HttpServletRequest request) {
+        ProblemDetail problem = ProblemDetail.forStatusAndDetail(HttpStatus.BAD_REQUEST, ex.getMessage());
+        problem.setTitle("Merchandise Rule Violation");
+        problem.setType(URI.create("https://api.omnichannel.com/errors/vip-merchandise-conflict"));
         problem.setProperty("timestamp", Instant.now());
         problem.setProperty("path", request.getRequestURI());
         return problem;

@@ -1,7 +1,6 @@
 package com.omnichannel.reservation.merchandise.domain.model;
 
 import com.omnichannel.reservation.inventory.domain.exception.InventoryInsufficientException;
-
 import lombok.Getter;
 
 import java.math.BigDecimal;
@@ -46,19 +45,22 @@ public class MerchandiseItem {
 
     /**
      * Giữ kho cho sản phẩm merchandise.
-     * TODO: User sẽ thực hiện kiểm tra điều kiện tồn kho và cập nhật reservedStock.
      * @param quantity số lượng muốn mua/giữ
      */
     public void reserve(int quantity) {
-        // TODO: Kiểm tra số lượng tồn khả dụng (availableStock).
-        // Nếu không đủ, bắn Exception tương ứng (ví dụ: InventoryInsufficientException).
-        // Nếu đủ, cộng thêm quantity vào reservedStock và cập nhật updatedAt.
+        int available = getAvailableStock();
+        if (available < quantity) {
+            throw new InventoryInsufficientException(itemCode, quantity, available);
+        }
+        this.reservedStock += quantity;
+        this.updatedAt = Instant.now();
     }
 
     /**
      * Hoàn trả lại số lượng đã giữ khi đơn hàng bị hủy hoặc hết hạn.
      */
     public void release(int quantity) {
-        // TODO: Giảm reservedStock một cách an toàn (không âm) và cập nhật updatedAt.
+        this.reservedStock = Math.max(0, this.reservedStock - quantity);
+        this.updatedAt = Instant.now();
     }
 }
