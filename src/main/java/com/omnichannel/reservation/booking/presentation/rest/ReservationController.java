@@ -5,6 +5,7 @@ import com.omnichannel.reservation.booking.application.port.in.ReserveInventoryC
 import com.omnichannel.reservation.booking.application.port.in.ReserveInventoryUseCase;
 import com.omnichannel.reservation.booking.presentation.dto.CreateReservationRequest;
 import com.omnichannel.reservation.booking.presentation.dto.ReservationResponse;
+import com.omnichannel.reservation.shared.idempotency.IdempotencyService;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.tags.Tag;
 import jakarta.validation.Valid;
@@ -23,6 +24,7 @@ import java.util.List;
 public class ReservationController {
 
     private final ReserveInventoryUseCase reserveInventoryUseCase;
+    private final IdempotencyService idempotencyService;
 
     @PostMapping
     @Operation(summary = "Create an inventory reservation", description = "Acquires hold lock on inventory items for specified hold duration")
@@ -50,7 +52,13 @@ public class ReservationController {
                 merchandiseCommands
         );
 
-        ReservationResult result = reserveInventoryUseCase.reserve(command);
+        ReservationResult result = idempotencyService.execute(
+                idempotencyKey,
+                "ReservationController.reserve",
+                Duration.ofSeconds(120),
+                ReservationResult.class,
+                () -> reserveInventoryUseCase.reserve(command)
+        );
 
         List<ReservationResponse.ItemResponse> itemResponses = result.items().stream()
                 .map(it -> new ReservationResponse.ItemResponse(it.itemId(), it.inventoryItemId(), it.quantity()))

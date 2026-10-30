@@ -6,6 +6,7 @@ import com.omnichannel.reservation.inventory.domain.exception.ReservationIsHeld;
 
 import com.omnichannel.reservation.inventory.domain.exception.InventoryInsufficientException;
 import com.omnichannel.reservation.booking.domain.exception.ReservationNotFoundException;
+import com.omnichannel.reservation.shared.domain.exception.IdempotencyConflictException;
 import jakarta.servlet.http.HttpServletRequest;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ProblemDetail;
@@ -77,6 +78,15 @@ public class GlobalExceptionHandler {
     public ProblemDetail handleGenericException(Exception ex, HttpServletRequest request) {
         ProblemDetail problem = ProblemDetail.forStatusAndDetail(HttpStatus.INTERNAL_SERVER_ERROR, ex.getMessage());
         problem.setTitle("Internal Server Error");
+        problem.setProperty("timestamp", Instant.now());
+        problem.setProperty("path", request.getRequestURI());
+        return problem;
+    }
+
+    @ExceptionHandler(IdempotencyConflictException.class)
+    public ProblemDetail handleIdempotencyConflictException(IdempotencyConflictException ex, HttpServletRequest request) {
+        ProblemDetail problem = ProblemDetail.forStatusAndDetail(HttpStatus.CONFLICT, ex.getMessage());
+        problem.setTitle("Idempotency Conflict");
         problem.setProperty("timestamp", Instant.now());
         problem.setProperty("path", request.getRequestURI());
         return problem;

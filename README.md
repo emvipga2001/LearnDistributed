@@ -172,14 +172,33 @@ Dành cho việc kiểm tra toàn bộ luồng hoạt động trực quan từ A
   - Poison Pill & Retry Resilience: Bắt lỗi gửi tin, tăng `retry_count`, tự động đánh dấu `FAILED` khi chạm ngưỡng (`max_retries = 3`).
   - Unit test: `OutboxDispatcherTest` (3/3 tests pass).
 
+#### 6. Case Study 3 (Mở Rộng): Merchandise Bundle & VIP Kit Auto-Addon
+- [x] **Vấn đề**: Nghiệp vụ đặc thù ngành sự kiện: Vé VIP tự động kèm gói quà tặng VIP Kit (Lightstick + Banner giá 0đ), trong khi vé thường có quyền mua thêm Merch trả phí. Vé VIP bị chặn mua thêm để chống đầu cơ.
+- [x] **Giải pháp**:
+  - Flyway `V3__add_merchandise_schema.sql` (`merchandise_items`, `reservation_merchandises`).
+  - Phân hệ `merchandise` theo chuẩn Bounded Context.
+  - Xử lý nghiệp vụ tự động bundle VIP kit và kiểm tra chặn `HaveMerchandise` exception (HTTP 400).
+
+#### 7. Case Study 4: Two-Tier Distributed Idempotency (`X-Idempotency-Key`)
+*Giải quyết triệt để vấn đề: Client double-click, browser retry, hoặc network timeout khiến cùng 1 thao tác đặt vé bị trừ tiền/tạo đơn nhiều lần (At-Most-Once processing).*
+- [x] **Khối 1: Domain & Ports Layer**:
+  - `IdempotencyStatus` enum: `PROCESSING`, `COMPLETED`, `FAILED`.
+  - `IdempotencyRecord` Value Object / Record: Bất biến, tự động validate dữ liệu đầu vào.
+  - `IdempotencyConflictException`: Ném ra khi phát hiện xung đột idempotency (HTTP 409 Conflict).
+  - `IdempotencyPort`: Driven Port gồm 5 phương thức (`tryLock`, `findRecord`, `createProcessingRecord`, `markAsCompleted`, `unlock`).
+- [x] **Khối 2: Infrastructure Layer (L1 Redis + L2 DB)**:
+  - `IdempotencyJpaEntity` & `SpringDataIdempotencyJpaRepository`: Lưu vĩnh viễn kết quả xử lý trong PostgreSQL.
+  - `TwoTierIdempotencyAdapter`: Tầng L1 dùng Redis `setIfAbsent` kèm TTL (120s) chặn bão request đồng thời; tầng L2 dùng PostgreSQL kiểm tra và cache vĩnh viễn kết quả.
+  - Unit test: `TwoTierIdempotencyAdapterTest` (6/6 tests pass).
+- [x] **Khối 3: Application & Presentation Layer Integration**:
+  - `IdempotencyService`: Bọc luồng thực thi `Supplier<T>`, tự động parse cached response JSON hoặc serialize kết quả khi thành công; tự động mở khóa Redis nếu nghiệp vụ xảy ra lỗi.
+  - `ReservationController`: Nhận header `X-Idempotency-Key` và bọc use-case bằng `IdempotencyService`.
+  - `GlobalExceptionHandler`: Đăng ký `@ExceptionHandler(IdempotencyConflictException.class)` chuẩn hóa phản hồi RFC 7807 (HTTP 409 Conflict).
+  - Unit test: `IdempotencyServiceTest` (6/6 tests pass).
+
 ---
 
 ### ⏳ KẾ HOẠCH BÀI TIẾP THEO (Up Next)
-* **Giai đoạn 2 - Case Study 3 (Mở rộng Merchandise Bundle & Add-on)**:
-  - Hoàn thiện nghiệp vụ VIP tự động có sẵn Merchandise Kit (Lightstick + Banner).
-  - Chặn vé VIP mua thêm Merch lẻ; chỉ cho phép vé thường mua thêm add-on.
-  - Outbox Event bắn thông tin Merchandise sang hệ thống Kho Vận (Fulfillment).
-* **Giai đoạn 2 - Case Study 4**: Distributed Idempotency 2 tầng (Redis TTL L1 + DB Unique Key L2) chống duplicate request từ client hoặc network retry.
 * **Giai đoạn 3**: Distributed Saga Orchestration State Machine (Giữ chỗ -> Thanh toán -> Trừ kho -> Xuất vé) kèm Compensating Transactions.
 * **Giai đoạn 4**: Đồng bộ kho Đa kênh (Offline POS Counter vs Online App) giải quyết bài toán rớt mạng Split-Brain.
 * **Giai đoạn 5**: Redisson Distributed Lock (Watchdog), Resilience4j Circuit Breaker và kiểm thử phá hủy hệ thống bằng k6.
