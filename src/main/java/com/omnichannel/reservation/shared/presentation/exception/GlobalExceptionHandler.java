@@ -1,11 +1,10 @@
 package com.omnichannel.reservation.shared.presentation.exception;
 
-import com.omnichannel.reservation.booking.domain.model.Reservation;
-import com.omnichannel.reservation.inventory.domain.exception.HaveMerchandise;
-import com.omnichannel.reservation.inventory.domain.exception.ReservationIsHeld;
-
-import com.omnichannel.reservation.inventory.domain.exception.InventoryInsufficientException;
+import com.omnichannel.reservation.booking.domain.exception.InvalidReservationStateException;
 import com.omnichannel.reservation.booking.domain.exception.ReservationNotFoundException;
+import com.omnichannel.reservation.inventory.domain.exception.HaveMerchandise;
+import com.omnichannel.reservation.inventory.domain.exception.InventoryInsufficientException;
+import com.omnichannel.reservation.inventory.domain.exception.ReservationIsHeld;
 import com.omnichannel.reservation.shared.domain.exception.IdempotencyConflictException;
 import com.omnichannel.reservation.shared.domain.exception.IdempotencyPayloadMismatchException;
 import jakarta.servlet.http.HttpServletRequest;
@@ -34,8 +33,8 @@ public class GlobalExceptionHandler {
         return problem;
     }
 
-    @ExceptionHandler(com.omnichannel.reservation.inventory.domain.exception.ReservationIsHeld.class)
-    public ProblemDetail handleReservationIsHeld(com.omnichannel.reservation.inventory.domain.exception.ReservationIsHeld ex, HttpServletRequest request) {
+    @ExceptionHandler(ReservationIsHeld.class)
+    public ProblemDetail handleReservationIsHeld(ReservationIsHeld ex, HttpServletRequest request) {
         ProblemDetail problem = ProblemDetail.forStatusAndDetail(HttpStatus.CONFLICT, ex.getMessage());
         problem.setTitle("Table Is Already Held");
         problem.setType(URI.create("https://api.omnichannel.com/errors/table-already-held"));
@@ -59,6 +58,16 @@ public class GlobalExceptionHandler {
         ProblemDetail problem = ProblemDetail.forStatusAndDetail(HttpStatus.NOT_FOUND, ex.getMessage());
         problem.setTitle("Reservation Not Found");
         problem.setType(URI.create("https://api.omnichannel.com/errors/reservation-not-found"));
+        problem.setProperty("timestamp", Instant.now());
+        problem.setProperty("path", request.getRequestURI());
+        return problem;
+    }
+
+    @ExceptionHandler(InvalidReservationStateException.class)
+    public ProblemDetail handleInvalidReservationStateException(InvalidReservationStateException ex, HttpServletRequest request) {
+        ProblemDetail problem = ProblemDetail.forStatusAndDetail(HttpStatus.BAD_REQUEST, ex.getMessage());
+        problem.setTitle("Invalid Reservation State Transition");
+        problem.setType(URI.create("https://api.omnichannel.com/errors/invalid-reservation-state"));
         problem.setProperty("timestamp", Instant.now());
         problem.setProperty("path", request.getRequestURI());
         return problem;

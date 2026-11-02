@@ -203,9 +203,24 @@ Dành cho việc kiểm tra toàn bộ luồng hoạt động trực quan từ A
   - `IdempotencyCleanupScheduler`: `@Scheduled` worker chạy ngầm định kỳ 02:00 sáng dọn dẹp các bản ghi quá hạn 7 ngày.
   - Unit test: `IdempotencyCleanupSchedulerTest` (2/2 tests pass), `TwoTierIdempotencyAdapterTest` (7/7 tests pass).
 
+#### 8. Case Study 5 (Giai đoạn 3): Distributed Saga Orchestration & State Machine
+*Xử lý quy trình nghiệp vụ phân tán dài hạn (Long-Running Distributed Workflow): Giữ chỗ -> Thanh toán -> Trừ kho -> Xuất vé kèm Compensating Transactions khi sự cố xảy ra.*
+- [x] **Khối 1: State Machine & Domain Events**:
+  - `Reservation` Entity invariants: Chuyển đổi trạng thái chặt chẽ (`PENDING` -> `CONFIRMED`, `CANCELLED`, `EXPIRED`).
+  - Bảo vệ bất biến nghiệp vụ: Chặn xác nhận đơn quá hạn 10 phút, ném `InvalidReservationStateException` (HTTP 400).
+  - Domain Events: `ReservationConfirmedEvent`, `ReservationCancelledEvent`, `ReservationExpiredEvent`.
+  - Unit test: `ReservationTest` (6/6 tests pass).
+- [x] **Khối 2: Saga Coordinator & Compensating Action**:
+  - `ProcessPaymentResultUseCase`: Inbound Port cho luồng kết quả thanh toán.
+  - `BookingSagaCoordinator`: Điều phối Saga tập trung (Orchestrator).
+  - Quản lý giao dịch nguyên tử (`@Transactional`): Cập nhật trạng thái `Reservation` và ghi Domain Event vào Outbox trong cùng 1 Database transaction.
+  - Bồi hoàn phân tán (Compensating Action): Khi thanh toán thất bại, kích hoạt `releaseHold` trên Redis bằng Lua script an toàn giải phóng ghế ngay lập tức.
+  - Chống trùng lặp (Idempotent Webhook Retry): Tự động phát hiện và bỏ qua khi đơn đã được xử lý trước đó.
+  - Unit test: `BookingSagaCoordinatorTest` (6/6 tests pass).
+
 ---
 
 ### ⏳ KẾ HOẠCH BÀI TIẾP THEO (Up Next)
-* **Giai đoạn 3**: Distributed Saga Orchestration State Machine (Giữ chỗ -> Thanh toán -> Trừ kho -> Xuất vé) kèm Compensating Transactions.
+* **Giai đoạn 3 (Khối 3)**: Presentation API (Payment Webhook Controller) & Chaos Integration Testing.
 * **Giai đoạn 4**: Đồng bộ kho Đa kênh (Offline POS Counter vs Online App) giải quyết bài toán rớt mạng Split-Brain.
 * **Giai đoạn 5**: Redisson Distributed Lock (Watchdog), Resilience4j Circuit Breaker và kiểm thử phá hủy hệ thống bằng k6.

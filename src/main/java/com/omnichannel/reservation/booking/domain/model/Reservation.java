@@ -1,5 +1,6 @@
 package com.omnichannel.reservation.booking.domain.model;
 
+import com.omnichannel.reservation.booking.domain.exception.InvalidReservationStateException;
 import com.omnichannel.reservation.merchandise.domain.model.ReservationMerchandise;
 import com.omnichannel.reservation.shared.domain.model.Channel;
 import lombok.Getter;
@@ -51,20 +52,34 @@ public class Reservation {
 
     public void confirm() {
         if (this.status != ReservationStatus.PENDING) {
-            throw new IllegalStateException("Cannot confirm reservation in status: " + this.status);
+            throw new InvalidReservationStateException("Cannot confirm reservation in status: " + this.status);
         }
         if (isExpired()) {
-            throw new IllegalStateException("Cannot confirm an expired reservation");
+            throw new InvalidReservationStateException("Cannot confirm an expired reservation");
         }
         this.status = ReservationStatus.CONFIRMED;
         this.updatedAt = Instant.now();
     }
 
     public void cancel() {
-        if (this.status == ReservationStatus.CANCELLED) {
+        if (this.status == ReservationStatus.CONFIRMED) {
+            throw new InvalidReservationStateException("Cannot cancel an already confirmed reservation");
+        }
+        if (this.status != ReservationStatus.PENDING) {
             return;
         }
         this.status = ReservationStatus.CANCELLED;
+        this.updatedAt = Instant.now();
+    }
+
+    public void expire() {
+        if (this.status == ReservationStatus.CONFIRMED) {
+            throw new InvalidReservationStateException("Cannot expire an already confirmed reservation");
+        }
+        if (this.status != ReservationStatus.PENDING) {
+            return;
+        }
+        this.status = ReservationStatus.EXPIRED;
         this.updatedAt = Instant.now();
     }
 }
