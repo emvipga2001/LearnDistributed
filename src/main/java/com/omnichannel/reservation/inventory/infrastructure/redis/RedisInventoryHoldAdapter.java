@@ -17,6 +17,9 @@ public class RedisInventoryHoldAdapter implements InventoryHoldPort {
     private final RedisScript<Long> holdScript = RedisScript.of(
             new ClassPathResource("scripts/multi_hold.lua"), Long.class);
 
+    private final RedisScript<Long> releaseHold = RedisScript.of(
+            new ClassPathResource("scripts/release_hold.lua"), Long.class);
+
     private final StringRedisTemplate stringRedisTemplate;
 
     @Override
@@ -35,6 +38,6 @@ public class RedisInventoryHoldAdapter implements InventoryHoldPort {
                 .map(id -> "inventory:hold:" + id)
                 .toList();
 
-        stringRedisTemplate.delete(redisKeys);
+        stringRedisTemplate.execute(releaseHold, redisKeys, customerId);
     }
 }

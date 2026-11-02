@@ -7,7 +7,9 @@ import com.omnichannel.reservation.inventory.domain.exception.ReservationIsHeld;
 import com.omnichannel.reservation.inventory.domain.exception.InventoryInsufficientException;
 import com.omnichannel.reservation.booking.domain.exception.ReservationNotFoundException;
 import com.omnichannel.reservation.shared.domain.exception.IdempotencyConflictException;
+import com.omnichannel.reservation.shared.domain.exception.IdempotencyPayloadMismatchException;
 import jakarta.servlet.http.HttpServletRequest;
+import jakarta.validation.ConstraintViolationException;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ProblemDetail;
 import org.springframework.web.bind.MethodArgumentNotValidException;
@@ -74,10 +76,17 @@ public class GlobalExceptionHandler {
         return problem;
     }
 
-    @ExceptionHandler(Exception.class)
-    public ProblemDetail handleGenericException(Exception ex, HttpServletRequest request) {
-        ProblemDetail problem = ProblemDetail.forStatusAndDetail(HttpStatus.INTERNAL_SERVER_ERROR, ex.getMessage());
-        problem.setTitle("Internal Server Error");
+    @ExceptionHandler(ConstraintViolationException.class)
+    public ProblemDetail handleConstraintViolationException(ConstraintViolationException ex, HttpServletRequest request) {
+        ProblemDetail problem = ProblemDetail.forStatusAndDetail(HttpStatus.BAD_REQUEST, "Tham số yêu cầu không hợp lệ");
+        problem.setTitle("Validation Failed");
+        problem.setType(URI.create("https://api.omnichannel.com/errors/constraint-violation"));
+        Map<String, String> errors = new HashMap<>();
+        ex.getConstraintViolations().forEach(cv -> {
+            String propertyPath = cv.getPropertyPath().toString();
+            errors.put(propertyPath, cv.getMessage());
+        });
+        problem.setProperty("errors", errors);
         problem.setProperty("timestamp", Instant.now());
         problem.setProperty("path", request.getRequestURI());
         return problem;
@@ -87,6 +96,26 @@ public class GlobalExceptionHandler {
     public ProblemDetail handleIdempotencyConflictException(IdempotencyConflictException ex, HttpServletRequest request) {
         ProblemDetail problem = ProblemDetail.forStatusAndDetail(HttpStatus.CONFLICT, ex.getMessage());
         problem.setTitle("Idempotency Conflict");
+        problem.setType(URI.create("https://api.omnichannel.com/errors/idempotency-conflict"));
+        problem.setProperty("timestamp", Instant.now());
+        problem.setProperty("path", request.getRequestURI());
+        return problem;
+    }
+
+    @ExceptionHandler(IdempotencyPayloadMismatchException.class)
+    public ProblemDetail handleIdempotencyPayloadMismatchException(IdempotencyPayloadMismatchException ex, HttpServletRequest request) {
+        ProblemDetail problem = ProblemDetail.forStatusAndDetail(HttpStatus.UNPROCESSABLE_ENTITY, ex.getMessage());
+        problem.setTitle("Idempotency Payload Mismatch");
+        problem.setType(URI.create("https://api.omnichannel.com/errors/idempotency-payload-mismatch"));
+        problem.setProperty("timestamp", Instant.now());
+        problem.setProperty("path", request.getRequestURI());
+        return problem;
+    }
+
+    @ExceptionHandler(Exception.class)
+    public ProblemDetail handleGenericException(Exception ex, HttpServletRequest request) {
+        ProblemDetail problem = ProblemDetail.forStatusAndDetail(HttpStatus.INTERNAL_SERVER_ERROR, ex.getMessage());
+        problem.setTitle("Internal Server Error");
         problem.setProperty("timestamp", Instant.now());
         problem.setProperty("path", request.getRequestURI());
         return problem;

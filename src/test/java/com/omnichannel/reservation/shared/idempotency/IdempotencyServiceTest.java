@@ -2,6 +2,7 @@ package com.omnichannel.reservation.shared.idempotency;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.omnichannel.reservation.shared.domain.exception.IdempotencyConflictException;
+import com.omnichannel.reservation.shared.domain.exception.IdempotencyPayloadMismatchException;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
@@ -36,6 +37,7 @@ class IdempotencyServiceTest {
     private static final String HANDLER = "TestHandler";
     private static final Duration TIMEOUT = Duration.ofSeconds(120);
 
+    record SampleRequest(String customerId, int seatId) {}
     record SampleResponse(String message, int code) {}
 
     @Test
@@ -60,37 +62,41 @@ class IdempotencyServiceTest {
     }
 
     @Test
-    @DisplayName("Request mới: Chiếm lock thành công, lưu PROCESSING, chạy nghiệp vụ, lưu COMPLETED và trả về kết quả")
+    @DisplayName("Request mới: Chiếm lock thành công, lưu PROCESSING kèm requestHash, chạy nghiệp vụ, lưu COMPLETED và trả về kết quả")
     void shouldExecuteAndComplete_WhenNewRequest() {
         when(idempotencyPort.tryLock(KEY, TIMEOUT)).thenReturn(true);
         when(idempotencyPort.findRecord(KEY)).thenReturn(Optional.empty());
 
-        SampleResponse result = idempotencyService.execute(KEY, HANDLER, TIMEOUT, SampleResponse.class,
+        SampleRequest request = new SampleRequest("CUST-1", 101);
+
+        SampleResponse result = idempotencyService.execute(KEY, HANDLER, request, TIMEOUT, SampleResponse.class,
                 () -> new SampleResponse("Created", 201));
 
         assertThat(result.message()).isEqualTo("Created");
         assertThat(result.code()).isEqualTo(201);
 
         verify(idempotencyPort).tryLock(KEY, TIMEOUT);
-        verify(idempotencyPort).createProcessingRecord(KEY, HANDLER);
+        verify(idempotencyPort).createProcessingRecord(eq(KEY), eq(HANDLER), anyString());
         verify(idempotencyPort).markAsCompleted(eq(KEY), contains("Created"));
         verify(idempotencyPort, never()).unlock(anyString());
     }
 
     @Test
-    @DisplayName("Không chiếm được lock: Nếu DB đã có kết quả COMPLETED thì trả về kết quả cũ ngay")
+    @DisplayName("Không chiếm được lock: Nếu DB đã có kết quả COMPLETED và trùng requestHash thì trả về kết quả cũ ngay")
     void shouldReturnCachedResponse_WhenLockFailed_AndRecordCompleted() {
         when(idempotencyPort.tryLock(KEY, TIMEOUT)).thenReturn(false);
 
+        SampleRequest request = new SampleRequest("CUST-1", 101);
+        // Hash của request {"customerId":"CUST-1","seatId":101}
         IdempotencyRecord cachedRecord = new IdempotencyRecord(
-                KEY, HANDLER, IdempotencyStatus.COMPLETED,
+                KEY, HANDLER, null, IdempotencyStatus.COMPLETED,
                 "{\"message\":\"FromCache\",\"code\":200}",
                 Instant.now(), Instant.now()
         );
         when(idempotencyPort.findRecord(KEY)).thenReturn(Optional.of(cachedRecord));
 
         AtomicInteger executed = new AtomicInteger(0);
-        SampleResponse result = idempotencyService.execute(KEY, HANDLER, TIMEOUT, SampleResponse.class, () -> {
+        SampleResponse result = idempotencyService.execute(KEY, HANDLER, request, TIMEOUT, SampleResponse.class, () -> {
             executed.incrementAndGet();
             return new SampleResponse("ShouldNotRun", 500);
         });
@@ -98,7 +104,26 @@ class IdempotencyServiceTest {
         assertThat(result.message()).isEqualTo("FromCache");
         assertThat(result.code()).isEqualTo(200);
         assertThat(executed.get()).isZero(); // Nghiệp vụ hoàn toàn không bị chạy lại!
-        verify(idempotencyPort, never()).createProcessingRecord(anyString(), anyString());
+        verify(idempotencyPort, never()).createProcessingRecord(anyString(), anyString(), anyString());
+    }
+
+    @Test
+    @DisplayName("Payload Mismatch: Cùng Idempotency Key nhưng khác Request Body thì ném IdempotencyPayloadMismatchException")
+    void shouldThrowPayloadMismatch_WhenSameKeyDifferentPayload() {
+        when(idempotencyPort.tryLock(KEY, TIMEOUT)).thenReturn(false);
+
+        IdempotencyRecord cachedRecord = new IdempotencyRecord(
+                KEY, HANDLER, "different-hash-12345", IdempotencyStatus.COMPLETED,
+                "{\"message\":\"FromCache\",\"code\":200}",
+                Instant.now(), Instant.now()
+        );
+        when(idempotencyPort.findRecord(KEY)).thenReturn(Optional.of(cachedRecord));
+
+        SampleRequest newRequest = new SampleRequest("CUST-HACKER", 999);
+
+        assertThatThrownBy(() -> idempotencyService.execute(KEY, HANDLER, newRequest, TIMEOUT, SampleResponse.class, () -> null))
+                .isInstanceOf(IdempotencyPayloadMismatchException.class)
+                .hasMessageContaining("nội dung payload không khớp");
     }
 
     @Test
@@ -107,7 +132,7 @@ class IdempotencyServiceTest {
         when(idempotencyPort.tryLock(KEY, TIMEOUT)).thenReturn(false);
 
         IdempotencyRecord processingRecord = new IdempotencyRecord(
-                KEY, HANDLER, IdempotencyStatus.PROCESSING,
+                KEY, HANDLER, null, IdempotencyStatus.PROCESSING,
                 null, Instant.now(), Instant.now()
         );
         when(idempotencyPort.findRecord(KEY)).thenReturn(Optional.of(processingRecord));
@@ -123,7 +148,7 @@ class IdempotencyServiceTest {
         when(idempotencyPort.tryLock(KEY, TIMEOUT)).thenReturn(true);
 
         IdempotencyRecord completedRecord = new IdempotencyRecord(
-                KEY, HANDLER, IdempotencyStatus.COMPLETED,
+                KEY, HANDLER, null, IdempotencyStatus.COMPLETED,
                 "{\"message\":\"ReplayAfterExpired\",\"code\":200}",
                 Instant.now(), Instant.now()
         );

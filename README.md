@@ -191,10 +191,17 @@ Dành cho việc kiểm tra toàn bộ luồng hoạt động trực quan từ A
   - `TwoTierIdempotencyAdapter`: Tầng L1 dùng Redis `setIfAbsent` kèm TTL (120s) chặn bão request đồng thời; tầng L2 dùng PostgreSQL kiểm tra và cache vĩnh viễn kết quả.
   - Unit test: `TwoTierIdempotencyAdapterTest` (6/6 tests pass).
 - [x] **Khối 3: Application & Presentation Layer Integration**:
-  - `IdempotencyService`: Bọc luồng thực thi `Supplier<T>`, tự động parse cached response JSON hoặc serialize kết quả khi thành công; tự động mở khóa Redis nếu nghiệp vụ xảy ra lỗi.
-  - `ReservationController`: Nhận header `X-Idempotency-Key` và bọc use-case bằng `IdempotencyService`.
-  - `GlobalExceptionHandler`: Đăng ký `@ExceptionHandler(IdempotencyConflictException.class)` chuẩn hóa phản hồi RFC 7807 (HTTP 409 Conflict).
-  - Unit test: `IdempotencyServiceTest` (6/6 tests pass).
+  - `IdempotencyService`: Bọc luồng thực thi `Supplier<T>`, tự động parse cached response JSON hoặc serialize kết quả khi thành công; tự động mở khóa Redis và dọn dẹp DB nếu nghiệp vụ xảy ra lỗi.
+  - `Payload Fingerprinting (SHA-256)`: Băm toàn bộ request body sang chuỗi hex 64 ký tự. Ném `IdempotencyPayloadMismatchException` (HTTP 422) nếu cùng một key bị tráo đổi nội dung payload.
+  - `ReservationController`: Nhận header `X-Idempotency-Key` với ràng buộc định dạng chuẩn UUID v4 (`@Pattern`), giới hạn độ dài `@Size(max = 128)`, và bọc use-case bằng `IdempotencyService`.
+  - `GlobalExceptionHandler`: Đăng ký `@ExceptionHandler` cho `IdempotencyConflictException` (409), `IdempotencyPayloadMismatchException` (422), và `ConstraintViolationException` (400) cho header không hợp lệ.
+  - `OpenAPI / Swagger 3`: Chú thích chi tiết header `X-Idempotency-Key` (format UUID, example, description) và các mã HTTP response tương ứng (201, 400, 409, 422).
+  - Unit test: `IdempotencyServiceTest` (7/7 tests pass).
+- [x] **Khối 4: Production Hardening & Retention Policy**:
+  - `Safe Release Hold`: Dùng Lua script `release_hold.lua` kiểm tra quyền sở hữu (`GET == customerId`) trước khi `DEL`, ngăn chặn nhả nhầm khóa của người khác khi hết hạn TTL.
+  - `Retention Policy & Bulk Deletion`: Flyway `V5__add_index_on_idempotency_created_at.sql` tạo index trên `created_at`.
+  - `IdempotencyCleanupScheduler`: `@Scheduled` worker chạy ngầm định kỳ 02:00 sáng dọn dẹp các bản ghi quá hạn 7 ngày.
+  - Unit test: `IdempotencyCleanupSchedulerTest` (2/2 tests pass), `TwoTierIdempotencyAdapterTest` (7/7 tests pass).
 
 ---
 

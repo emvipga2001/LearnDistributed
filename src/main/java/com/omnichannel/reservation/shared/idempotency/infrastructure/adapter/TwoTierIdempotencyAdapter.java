@@ -9,8 +9,10 @@ import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.stereotype.Component;
+import org.springframework.transaction.annotation.Transactional;
 
 import java.time.Duration;
+import java.time.Instant;
 import java.util.Optional;
 
 /**
@@ -30,29 +32,26 @@ public class TwoTierIdempotencyAdapter implements IdempotencyPort {
 
     @Override
     public boolean tryLock(String key, Duration timeout) {
-        // TODO: Sử dụng redisTemplate.opsForValue().setIfAbsent(LOCK_KEY_PREFIX + key, "PROCESSING", timeout)
         return Boolean.TRUE.equals(redisTemplate.opsForValue().setIfAbsent(LOCK_KEY_PREFIX + key, "PROCESSING", timeout));
     }
 
     @Override
     public Optional<IdempotencyRecord> findRecord(String key) {
-        // TODO: Tìm entity trong jpaRepository.findById(key) và map sang domain IdempotencyRecord
         return jpaRepository.findById(key).map(this::toDomain);
     }
 
     @Override
-    public void createProcessingRecord(String key, String handlerName) {
-        // TODO: Khởi tạo IdempotencyJpaEntity với status = PROCESSING và lưu vào jpaRepository
+    public void createProcessingRecord(String key, String handlerName, String requestHash) {
         IdempotencyJpaEntity entity = new IdempotencyJpaEntity();
         entity.setIdempotencyKey(key);
         entity.setHandlerName(handlerName);
+        entity.setRequestHash(requestHash);
         entity.setStatus(IdempotencyStatus.PROCESSING);
         jpaRepository.save(entity);
     }
 
     @Override
     public void markAsCompleted(String key, String responsePayload) {
-        // TODO: Tìm entity theo key, cập nhật status = COMPLETED, gán responsePayload và lưu lại
         IdempotencyJpaEntity entity = jpaRepository.getReferenceById(key);
         entity.setStatus(IdempotencyStatus.COMPLETED);
         entity.setResponsePayload(responsePayload);
@@ -61,14 +60,23 @@ public class TwoTierIdempotencyAdapter implements IdempotencyPort {
 
     @Override
     public void unlock(String key) {
-        // TODO: Xóa key lock trên Redis qua redisTemplate.delete(LOCK_KEY_PREFIX + key)
         redisTemplate.delete(LOCK_KEY_PREFIX + key);
+        jpaRepository.deleteById(key);
+    }
+
+    @Override
+    @Transactional
+    public int deleteRecordsOlderThan(Duration retentionPeriod) {
+        Instant now = Instant.now();
+        Instant cutoffTime = now.minus(retentionPeriod);
+        return jpaRepository.deleteExpiredBefore(cutoffTime);
     }
 
     private IdempotencyRecord toDomain(IdempotencyJpaEntity entity) {
         return new IdempotencyRecord(
                 entity.getIdempotencyKey(),
                 entity.getHandlerName(),
+                entity.getRequestHash(),
                 entity.getStatus(),
                 entity.getResponsePayload(),
                 entity.getCreatedAt(),

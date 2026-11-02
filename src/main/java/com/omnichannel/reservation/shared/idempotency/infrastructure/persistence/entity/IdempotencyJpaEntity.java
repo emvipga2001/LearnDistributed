@@ -21,6 +21,9 @@ public class IdempotencyJpaEntity extends BaseUpdatableEntity {
     @Column(name = "handler_name", nullable = false, length = 64)
     private String handlerName;
 
+    @Column(name = "request_hash", length = 64)
+    private String requestHash;
+
     @Enumerated(EnumType.STRING)
     @Column(name = "status", nullable = false, length = 32)
     private IdempotencyStatus status;

@@ -40,6 +40,7 @@ class TwoTierIdempotencyAdapterTest {
 
     private static final String KEY = "test-key-123";
     private static final String LOCK_KEY = "idempotency:lock:test-key-123";
+    private static final String HASH = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855";
 
     @BeforeEach
     void setUp() {
@@ -75,6 +76,7 @@ class TwoTierIdempotencyAdapterTest {
         IdempotencyJpaEntity entity = new IdempotencyJpaEntity();
         entity.setIdempotencyKey(KEY);
         entity.setHandlerName("ReservationController.reserve");
+        entity.setRequestHash(HASH);
         entity.setStatus(IdempotencyStatus.COMPLETED);
         entity.setResponsePayload("{\"reservationCode\":\"RES-12345\"}");
         entity.setCreatedAt(Instant.now());
@@ -86,14 +88,15 @@ class TwoTierIdempotencyAdapterTest {
 
         assertThat(result).isPresent();
         assertThat(result.get().key()).isEqualTo(KEY);
+        assertThat(result.get().requestHash()).isEqualTo(HASH);
         assertThat(result.get().status()).isEqualTo(IdempotencyStatus.COMPLETED);
         assertThat(result.get().responsePayload()).isEqualTo("{\"reservationCode\":\"RES-12345\"}");
     }
 
     @Test
-    @DisplayName("createProcessingRecord: Lưu bản ghi mới với trạng thái PROCESSING")
+    @DisplayName("createProcessingRecord: Lưu bản ghi mới với trạng thái PROCESSING và requestHash")
     void shouldSaveEntityWithProcessingStatus() {
-        adapter.createProcessingRecord(KEY, "ReservationController.reserve");
+        adapter.createProcessingRecord(KEY, "ReservationController.reserve", HASH);
 
         ArgumentCaptor<IdempotencyJpaEntity> captor = ArgumentCaptor.forClass(IdempotencyJpaEntity.class);
         verify(jpaRepository).save(captor.capture());
@@ -101,6 +104,7 @@ class TwoTierIdempotencyAdapterTest {
         IdempotencyJpaEntity saved = captor.getValue();
         assertThat(saved.getIdempotencyKey()).isEqualTo(KEY);
         assertThat(saved.getHandlerName()).isEqualTo("ReservationController.reserve");
+        assertThat(saved.getRequestHash()).isEqualTo(HASH);
         assertThat(saved.getStatus()).isEqualTo(IdempotencyStatus.PROCESSING);
     }
 
@@ -121,10 +125,22 @@ class TwoTierIdempotencyAdapterTest {
     }
 
     @Test
-    @DisplayName("unlock: Gọi xóa key khóa L1 trên Redis")
-    void shouldDeleteLockKeyFromRedis() {
+    @DisplayName("unlock: Gọi xóa key khóa L1 trên Redis và xóa bản ghi trong DB")
+    void shouldDeleteLockKeyFromRedisAndDatabase() {
         adapter.unlock(KEY);
 
         verify(redisTemplate).delete(LOCK_KEY);
+        verify(jpaRepository).deleteById(KEY);
+    }
+
+    @Test
+    @DisplayName("deleteRecordsOlderThan: Gọi repository xóa các bản ghi trước cutoff time và trả về số dòng bị xóa")
+    void shouldDeleteRecordsOlderThanRetentionPeriod() {
+        when(jpaRepository.deleteExpiredBefore(any(Instant.class))).thenReturn(5);
+
+        int deletedCount = adapter.deleteRecordsOlderThan(Duration.ofDays(7));
+
+        assertThat(deletedCount).isEqualTo(5);
+        verify(jpaRepository).deleteExpiredBefore(any(Instant.class));
     }
 }

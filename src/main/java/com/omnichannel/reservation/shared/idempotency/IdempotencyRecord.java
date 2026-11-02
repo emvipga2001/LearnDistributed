@@ -8,6 +8,7 @@ import java.time.Instant;
 public record IdempotencyRecord(
         String key,
         String handlerName,
+        String requestHash,
         IdempotencyStatus status,
         String responsePayload,
         Instant createdAt,
