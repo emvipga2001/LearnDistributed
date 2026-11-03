@@ -217,10 +217,15 @@ Dành cho việc kiểm tra toàn bộ luồng hoạt động trực quan từ A
   - Bồi hoàn phân tán (Compensating Action): Khi thanh toán thất bại, kích hoạt `releaseHold` trên Redis bằng Lua script an toàn giải phóng ghế ngay lập tức.
   - Chống trùng lặp (Idempotent Webhook Retry): Tự động phát hiện và bỏ qua khi đơn đã được xử lý trước đó.
   - Unit test: `BookingSagaCoordinatorTest` (6/6 tests pass).
+- [x] **Khối 3: Presentation API (Payment Webhook Controller) & Verification**:
+  - `PaymentWebhookRequest` & `PaymentWebhookResponse` DTO Records với Bean Validation (`@NotBlank`, `@NotNull`) và enum `PaymentWebhookStatus`.
+  - `PaymentWebhookController`: Endpoint `POST /api/v1/payments/webhook` điều phối kết quả thanh toán sang `ProcessPaymentResultUseCase`.
+  - Xử lý phản hồi đa ngữ cảnh: Trả về HTTP 200 kèm thông điệp chi tiết cho cả 2 nhánh Thành công & Thất bại (giúp Gateway dừng retry spam).
+  - Exception Handling: Ánh xạ mã đơn không tồn tại (HTTP 404), đơn quá hạn 10 phút (HTTP 400), payload thiếu trường bắt buộc (HTTP 400).
+  - Unit test: `PaymentWebhookControllerTest` MockMvc mockup (5/5 tests pass).
 
 ---
 
 ### ⏳ KẾ HOẠCH BÀI TIẾP THEO (Up Next)
-* **Giai đoạn 3 (Khối 3)**: Presentation API (Payment Webhook Controller) & Chaos Integration Testing.
 * **Giai đoạn 4**: Đồng bộ kho Đa kênh (Offline POS Counter vs Online App) giải quyết bài toán rớt mạng Split-Brain.
 * **Giai đoạn 5**: Redisson Distributed Lock (Watchdog), Resilience4j Circuit Breaker và kiểm thử phá hủy hệ thống bằng k6.
