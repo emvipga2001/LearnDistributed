@@ -51,6 +51,7 @@ src/main/java/com/omnichannel/reservation/
 ---
 
 ## 📖 Tài Liệu Nghiệp Vụ & Kịch Bản Phân Tán
+* 📄 [Bản đồ Kiến thức Kiến trúc Hệ thống Phân tán (Distributed Systems Core Knowledge Base)](docs/DISTRIBUTED_SYSTEMS_CORE_KNOWLEDGE.md)
 * 📄 [Tài liệu Kịch bản Đặt chỗ Đa mô hình (Hybrid Concert & Flash Sale)](docs/HYBRID_CONCERT_RESERVATION_SCENARIO.md)
 
 ---
