@@ -11,6 +11,10 @@ Tài liệu này tổng hợp toàn bộ các nguyên lý lý thuyết, mẫu th
 4. [Tính bất biến & Idempotency phân tán hai tầng (Two-Tier Idempotency)](#4-tính-bất-biến--idempotency-phân-tán-hai-tầng)
 5. [Saga Orchestration & Máy trạng thái hữu hạn (State Machine)](#5-saga-orchestration--máy-trạng-thái-hữu-hạn)
 6. [Tích hợp dịch vụ bên thứ ba & Kiến trúc Webhook (Asynchronous Callbacks)](#6-tích-hợp-dịch-vụ-bên-thứ-ba--kiến-trúc-webhook)
+7. [Đồng bộ kho Đa kênh (Offline POS vs Online App) & Phân vùng mạng (Split-Brain)](#7-đồng-bộ-kho-đa-kênh-offline-pos-vs-online-app--phân-vùng-mạng-split-brain)
+8. [Khóa phân tán Redisson & Cơ chế Watchdog Timer](#8-khóa-phân-tán-redisson--cơ-chế-watchdog-timer)
+9. [Khả năng phục hồi hệ thống & Resilience4j Circuit Breaker (Cầu chì ngắt mạch)](#9-khả-năng-phục-hồi-hệ-thống--resilience4j-circuit-breaker-cầu-chì-ngắt-mạch)
+10. [Kiểm thử tải phá hủy hệ thống bằng k6 (Chaos Load Testing)](#10-kiểm-thử-tải-phá-hủy-hệ-thống-bằng-k6-chaos-load-testing)
 
 ---
 
@@ -140,4 +144,132 @@ Saga chia một giao dịch lớn kéo dài (Long-Running Transaction) thành ch
   * Vì từ góc độ hạ tầng phân tán, giao dịch thông báo đã được tiếp nhận và xử lý thành công. Nếu trả về lỗi 4xx/5xx, đối tác sẽ hiểu lầm là server bị sự cố và kích hoạt bão Retry (Retry Storm) liên tục.
 
 ---
-*Tài liệu này đóng vai trò là kim chỉ nam kiến trúc phân tán nền tảng trước khi bước vào các bài toán nâng cao về phân vùng mạng và giải quyết xung đột dữ liệu.*
+
+## 7. ĐỒNG BỘ KHO ĐA KÊNH (OFFLINE POS VS ONLINE APP) & PHÂN VÙNG MẠNG (SPLIT-BRAIN)
+
+### 7.1. Phân bổ hạn ngạch tồn kho trước (Quota-Based Inventory Partitioning)
+* **Bối cảnh**: Quầy POS tại sự kiện/rạp phim bị đứt cáp quang nhưng vẫn phải tiếp tục bán vé, không được phép dừng.
+* **Giải pháp chia tỷ lệ (ví dụ 7:3)**:
+  - Cụm Online (Cloud DB & Redis) được cấp bán tối đa: 70% tổng kho.
+  - Cụm Offline POS được cấp hạn ngạch (Bucket / Credit Pool): 30% tổng kho.
+* **Bảo toàn toán học**: Khi mất mạng hoàn toàn, máy POS trừ dần trong hạn ngạch 30% độc lập. Tổng số vé bán ra của cả 2 bên cộng lại tối đa là $70\% + 30\% = 100\%$ $\rightarrow$ **Triệt tiêu 100% rủi ro Over-selling mà không cần liên lạc mạng**.
+
+### 7.2. Phân dải ghế định danh triệt tiêu xung đột (Zero-Collision Seat Partitioning)
+* Đối với tài nguyên định danh cố định (Ghế ngồi có số cố định `A-01` $\rightarrow$ `A-10`):
+* **Chiến lược Disjoint Resource Partitioning**:
+  $$S_{\text{online}} \cap S_{\text{offline}} = \emptyset$$
+  - Online Pool: Chỉ được thấy và bán ghế `[A-01 -> A-07]`.
+  - Offline Pool: Chỉ được thấy và bán ghế `[A-08 -> A-10]`.
+* **Kết quả**: Khi mạng đứt, tính khả dụng (**Availability**) đạt 100% mà không bao giờ xảy ra va chạm ghế (Seat Collision).
+
+### 7.3. Khóa tự nhiên kết hợp & Idempotency ngoại tuyến (Composite Natural Key)
+* Mỗi máy POS mang một định danh phần cứng duy nhất (`posDeviceId`) và bộ đếm hóa đơn tăng dần tự nhiên (`localOrderSeq`).
+* Khi bán offline, đơn hàng mang khóa tự nhiên:
+  $$\text{Composite Key} = \text{posDeviceId} + \text{localOrderSeq}$$
+* Khi có mạng trở lại và đồng bộ hàng loạt lên Server:
+  - Server dùng chính Composite Key này làm **Idempotency Key**.
+  - Nếu đường truyền chập chờn khiến máy POS gửi lại 2 lần (Retry Storm), Server nhận ra key đã tồn tại và trả về thành công mà **không trừ kho 2 lần**.
+
+### 7.4. Lệch đồng hồ phân tán & Thẩm định tính đơn điệu (Clock Drift & Validation)
+* **Đồng hồ POS và Cloud không bao giờ đồng bộ tuyệt đối (Clock Drift)**:
+  - `sold_at` (POS Hardware Timestamp): Thời điểm giao dịch thực tế diễn ra.
+  - `synced_at` (Server Timestamp): Thời điểm Server trung tâm tiếp nhận.
+* **Cơ chế Validation chống gian lận lùi đồng hồ**:
+  1. *Cửa sổ trôi thời gian (Max Clock Drift Window)*: Bắt buộc $\text{sold\_at} \le \text{server\_now} + \Delta t$ (tránh đơn hàng đến từ tương lai).
+  2. *Thẩm định tính đơn điệu tăng dần (Monotonic Sequence Validation)*: Hóa đơn sau $\text{seq}_{n+1}$ bắt buộc phải có $\text{sold\_at} \ge \text{sold\_at}_n$. Nếu nhỏ hơn $\rightarrow$ Phát hiện nhân viên chỉnh lùi giờ hệ điều hành để lách luật.
+
+### 7.5. Cơ chế Kho âm có kiểm soát (Controlled Negative Inventory)
+* **Bản chất nghiệp vụ**: Chi phí từ chối khách tại cổng đắt hơn chi phí đền bù/nâng hạng. Hệ thống chấp nhận đánh đổi tính nhất quán để lấy trải nghiệm khách hàng (Trade-off).
+* **Hạn mức thấu chi (Overdraft Buffer)**: Cho phép tồn kho giảm xuống dưới 0 có giới hạn (ví dụ: tối đa $-5$ hoặc $-10$ vé). Quá ngưỡng này mới khóa cứng màn hình bán hàng.
+* **Chiến lược bồi hoàn khi hòa giải (Reconciliation & Eventual Consistency)**:
+  - Trích xuất vé từ kho dự phòng ngoại giao (Buffer Reserve).
+  - Nâng hạng dịch vụ miễn phí (Free Upgrade lên vé VIP còn trống).
+  - Hủy đơn có bồi thường (Compensated Cancellation: hoàn 100% tiền + tặng voucher).
+
+---
+
+## 8. KHÓA PHÂN TÁN REDISSON & CƠ CHẾ WATCHDOG TIMER
+
+### 8.1. Lỗ hổng chết người của Khóa tự chế (`SETNX + TTL`)
+* Khi luồng xử lý gặp sự cố mạng chậm hoặc GC pause khiến thời gian thực thi vượt quá TTL:
+  $$\text{Luồng 1 chiếm Lock (TTL 30s)} \rightarrow \text{Chạy mất 40s} \rightarrow \text{Giây thứ 30: Redis xóa Lock} \rightarrow \text{Luồng 2 nhảy vào chiếm Lock!}$$
+* Khi Luồng 1 chạy xong (giây thứ 40), lệnh `DEL` của Luồng 1 sẽ **xóa nhầm khóa của Luồng 2**, gây phá vỡ tính loại trừ tương hỗ (Mutual Exclusion).
+
+### 8.2. Cơ chế Chó canh gác (Watchdog Timer)
+* Khi gọi `rLock.lock()` (không truyền `leaseTime`), Redisson cấp TTL mặc định là **30 giây** (`lockWatchdogTimeout`).
+* Redisson khởi động Netty Timer Task chạy ngầm định kỳ mỗi **10 giây** (bằng $1/3$ timeout).
+* Tiến trình này tự động gửi lệnh Lua sang Redis để **reset TTL về lại 30 giây** nếu luồng vẫn còn sống và còn thực thi.
+* **Fail-Safe**: Nếu Server bị sập/mất điện hoặc đứt mạng hoàn toàn $\rightarrow$ Watchdog chết theo $\rightarrow$ Sau đúng 30 giây, Redis tự động giải phóng khóa, loại bỏ hoàn toàn nguy cơ Deadlock phân tán vĩnh viễn.
+
+### 8.3. Khóa tái nhập (Reentrant Lock)
+* Redisson lưu trạng thái khóa dưới dạng **Redis Hash**:
+  $$\text{Key} = \text{LockName}, \quad \text{Field} = \text{"UUID:ThreadId"}, \quad \text{Value} = \text{Counter}$$
+* Khi cùng một Thread gọi lồng nhiều phương thức cùng xin 1 khóa, Redisson chỉ tăng `counter = counter + 1` và giải phóng khi `counter = 0`, ngăn ngừa tự Deadlock chính mình.
+
+### 8.4. Phân tầng kiến trúc: Redisson Lock vs Database Lock
+* **Redisson Distributed Lock**: Dùng ở **vòng ngoài (Cổng Service / Workflow)** để bảo vệ các tác vụ đa hệ thống (gọi API bên ngoài, mail, điều phối) và giảm tải I/O cho CSDL.
+* **Pessimistic Lock (`SELECT FOR UPDATE`)**: Dùng ở **vòng trong (Tầng Persistence)** trực tiếp trên bảng dữ liệu để cam kết tuyệt đối tính toàn vẹn ACID khi ghi nhận số lượng tồn kho.
+
+---
+
+## 9. KHẢ NĂNG PHỤC HỒI HỆ THỐNG & RESILIENCE4J CIRCUIT BREAKER (CẦU CHÌ NGẮT MẠCH)
+
+### 9.1. Hiện tượng Sập dây chuyền (Cascading Failure)
+* Khi một dịch vụ phụ thuộc (Cổng thanh toán, Ngân hàng, SMS Partner) bị chậm (ví dụ: mất 30 giây mới timeout):
+  - Hàng ngàn luồng (Threads) của Spring Boot bị treo cứng để chờ phản hồi.
+  - Toàn bộ Tomcat Thread Pool, Connection Pool và RAM bị ngốn sạch chỉ để "ngồi chờ".
+  - Các tính năng khác hoàn toàn không liên quan (xem thông tin, duyệt danh sách) cũng bị sập theo vì server cạn kiệt thread.
+
+### 9.2. Ba trạng thái cốt lõi của Circuit Breaker
+```
+[CLOSED (Bình thường)] ---> (Lỗi vượt ngưỡng > 50%) ---> [OPEN (Ngắt mạch)]
+        ^                                                      |
+        |                                                 (Chờ 10s)
+        |                                                      v
+  (Thử nghiệm OK) <------------------------------------ [HALF-OPEN (Thăm dò)]
+```
+1. **`CLOSED` (Đóng mạch)**: Cho phép request đi qua bình thường. Đo lường tỷ lệ lỗi trên cửa sổ trượt (Sliding Window).
+2. **`OPEN` (Mở mạch / Bật cầu chì)**: Khi tỷ lệ lỗi vượt ngưỡng, lập tức từ chối mọi request mới tại ngưỡng cửa trong 1 mili-giây (**Fail-Fast**), chuyển thẳng vào hàm dự phòng (**Fallback Method**).
+3. **`HALF-OPEN` (Nửa mở)**: Sau thời gian chờ làm nguội (`waitDurationInOpenState`), cho phép một lượng nhỏ request đi qua thăm dò. Nếu thành công thì đóng mạch lại; nếu thất bại thì tiếp tục mở mạch.
+
+### 9.3. Kiến trúc triển khai thực tế trong Spring Boot
+* **Cấu hình YAML (`application.yml`)**:
+  ```yaml
+  resilience4j:
+    circuitbreaker:
+      instances:
+        paymentGatewayCircuitBreaker:
+          slidingWindowSize: 10
+          failureRateThreshold: 50
+          slowCallDurationThreshold: 2000ms
+          slowCallRateThreshold: 50
+          waitDurationInOpenState: 10000ms
+          permittedNumberOfCallsInHalfOpenState: 3
+  ```
+* **Bọc Use Case bằng Annotation**:
+  ```java
+  @CircuitBreaker(name = "paymentGatewayCircuitBreaker", fallbackMethod = "handlePaymentFallback")
+  public PaymentInitResult createPaymentUrl(PaymentCommand command) {
+      return restClient.post().uri("https://sandbox.vnpay.vn/payment/create").retrieve().body(PaymentInitResult.class);
+  }
+
+  public PaymentInitResult handlePaymentFallback(PaymentCommand command, Throwable ex) {
+      return new PaymentInitResult(command.reservationId(), "FALLBACK_PENDING", "Cổng thanh toán quá tải, vui lòng chuyển khoản qua QR hoặc tại quầy!");
+  }
+  ```
+
+---
+
+## 10. KIỂM THỬ TẢI PHÁ HỦY HỆ THỐNG BẰNG K6 (CHAOS LOAD TESTING)
+
+### 10.1. Kiểm thử đột biến (Spike Test) & Tranh chấp nóng (Hotspot Contention)
+* Kích nổ 10.000 users đồng thời trong 5 giây cùng tranh mua đúng 1 chiếc vé hoặc 1 suất Flash Sale duy nhất.
+* Mục tiêu: Chứng minh tính bất biến tuyệt đối (**Zero Oversell**), tồn kho cuối cùng phải bằng đúng 0, không có 2 người mua cùng 1 vé.
+
+### 10.2. Ba chỉ số vàng đo lường SLA Production
+1. **P95 / P99 Latency**: 95% hoặc 99% khách hàng nhận phản hồi dưới bao nhiêu mili-giây (thay vì chỉ nhìn vào trung bình Average).
+2. **Circuit Breaker Trigger Rate**: Cầu chì có bật đúng lúc khi hệ thống quá tải và có tự đóng lại sau khi hạ nhiệt hay không.
+3. **Data Integrity (Tính toàn vẹn dữ liệu)**: Đối soát Database, Outbox Events và Redis sau bài test để bảo đảm không xảy ra mất mát dữ liệu hoặc Deadlock (`40P01`).
+
+---
+*Tài liệu được cập nhật liên tục theo tiến trình học tập và thực hành thực tế dự án Omnichannel Booking Engine.*
